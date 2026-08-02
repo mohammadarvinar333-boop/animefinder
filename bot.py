@@ -8,7 +8,6 @@ from datetime import datetime
 import requests
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
-from googlesearch import search
 
 # ============ تنظیمات ============
 TOKEN = "8876632730:AAEplhdqqb24CPLWe6BzF0QIvMuwboQpLNI"
@@ -63,7 +62,8 @@ class AnimeSearcher:
     
     def search_google(self, anime_name: str, quality: str = None, dubbed: bool = False, 
                       uncensored: bool = False) -> List[Dict]:
-        query_parts = [f'"{anime_name}"', 'انیمه', 'دانلود']
+        # ساخت کوئری
+        query_parts = [anime_name, 'انیمه', 'دانلود']
         if quality:
             query_parts.append(quality)
         if dubbed:
@@ -78,25 +78,70 @@ class AnimeSearcher:
         
         try:
             logger.info(f"جستجوی گوگل برای: {query}")
-            search_results = list(search(query, num=12, lang='fa', stop=12))
             
-            for url in search_results:
-                if url in seen_urls:
-                    continue
-                seen_urls.add(url)
+            # روش جدید برای جستجوی گوگل با استفاده از requests
+            import urllib.parse
+            search_url = f"https://www.google.com/search?q={urllib.parse.quote(query)}&hl=fa"
+            
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            }
+            
+            response = requests.get(search_url, headers=headers, timeout=10)
+            
+            if response.status_code == 200:
+                # استخراج لینک‌ها از HTML با regex ساده
+                import re
+                urls = re.findall(r'<a[^>]+href="([^"]+)"[^>]*>', response.text)
                 
-                is_trusted = any(site in url for site in self.trusted_sites)
-                
-                result = {
-                    'url': url,
-                    'title': self.extract_title(url, anime_name),
-                    'quality': self.detect_quality(url),
-                    'dubbed': self.detect_dubbed(url) or dubbed,
-                    'uncensored': self.detect_uncensored(url) or uncensored,
-                    'source': 'google',
-                    'trusted': is_trusted
-                }
-                results.append(result)
+                for url in urls:
+                    if url.startswith('/url?q='):
+                        url = urllib.parse.unquote(url.replace('/url?q=', '').split('&')[0])
+                        if url.startswith('http') and 'google' not in url and 'youtube' not in url:
+                            if url not in seen_urls:
+                                seen_urls.add(url)
+                                
+                                is_trusted = any(site in url for site in self.trusted_sites)
+                                
+                                result = {
+                                    'url': url,
+                                    'title': self.extract_title(url, anime_name),
+                                    'quality': self.detect_quality(url),
+                                    'dubbed': self.detect_dubbed(url) or dubbed,
+                                    'uncensored': self.detect_uncensored(url) or uncensored,
+                                    'source': 'google',
+                                    'trusted': is_trusted
+                                }
+                                results.append(result)
+                                
+                                if len(results) >= 8:
+                                    break
+            
+            # اگر نتایج کافی نبود، از روش جایگزین استفاده کن
+            if len(results) < 3:
+                logger.info("استفاده از روش جایگزین جستجو...")
+                # جستجو با کتابخانه google-search-python
+                try:
+                    from googlesearch import search
+                    search_results = list(search(query, num_results=10, lang='fa', stop=10, pause=2.0))
+                    for url in search_results:
+                        if url not in seen_urls:
+                            seen_urls.add(url)
+                            is_trusted = any(site in url for site in self.trusted_sites)
+                            result = {
+                                'url': url,
+                                'title': self.extract_title(url, anime_name),
+                                'quality': self.detect_quality(url),
+                                'dubbed': self.detect_dubbed(url) or dubbed,
+                                'uncensored': self.detect_uncensored(url) or uncensored,
+                                'source': 'google',
+                                'trusted': is_trusted
+                            }
+                            results.append(result)
+                            if len(results) >= 8:
+                                break
+                except Exception as e:
+                    logger.error(f"خطا در روش جایگزین: {e}")
             
             results.sort(key=lambda x: (not x['trusted'], x['quality'] != '1080p'))
             
@@ -495,6 +540,10 @@ async def run_bot():
         application.add_handler(CallbackQueryHandler(bot.handle_callback))
         
         logger.info("🤖 ربات انیمه در حال راه‌اندازی...")
+        
+        # پاک کردن وبهوک قبل از شروع (مهم برای رفع Conflict)
+        await application.bot.delete_webhook()
+        logger.info("✅ وبهوک پاک شد")
         
         # شروع پولینگ با مدیریت صحیح
         await application.initialize()
