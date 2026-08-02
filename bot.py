@@ -493,7 +493,8 @@ def main():
         application.add_handler(CallbackQueryHandler(bot.handle_callback))
         
         logger.info("🤖 ربات انیمه راه‌اندازی شد!")
-        application.run_polling(allowed_updates=Update.ALL_TYPES)
+        # تغییر این خط برای رفع خطای Render
+        application.run_polling()
         
     except Exception as e:
         logger.error(f"خطا در راه‌اندازی ربات: {e}")
