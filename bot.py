@@ -2,13 +2,12 @@ import os
 import re
 import json
 import logging
-import asyncio
-import urllib.parse
-import requests
 from typing import List, Dict, Optional
 from datetime import datetime
+import requests
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+from googlesearch import search
 
 # ============ تنظیمات ============
 TOKEN = "8876632730:AAEplhdqqb24CPLWe6BzF0QIvMuwboQpLNI"
@@ -45,15 +44,12 @@ class AnimeSearcher:
             'jujutsu kaisen', 'my hero academia', 'death note', 'fullmetal alchemist',
             'dragon ball', 'pokemon', 'sailor moon', 'hunter x hunter', 'one punch man',
             'tokyo ghoul', 'sword art online', 'fairy tail', 'gintama', 'jojo bizarre',
-            'spy x family', 'chainsaw man', 'vinland saga', 'berserk', 'evangelion',
-            'steins gate', 'code geass', 'cowboy bebop', 'haikyuu', 'kuroko no basket'
+            'spy x family', 'chainsaw man', 'vinland saga', 'berserk', 'evangelion'
         ]
         
         self.trusted_sites = [
             'animekhor.ir', 'animelab.ir', 'animeshow.ir',
-            'iran-anime.ir', 'animeworld.ir', 'anime-4u.ir',
-            'dl.anime', 'anime-dl.ir', 'anime-sub.ir',
-            'anime.ir', 'animesub.ir', 'animedl.ir'
+            'iran-anime.ir', 'animeworld.ir', 'anime-4u.ir'
         ]
     
     def correct_spelling(self, name: str) -> str:
@@ -66,10 +62,7 @@ class AnimeSearcher:
     
     def search_google(self, anime_name: str, quality: str = None, dubbed: bool = False, 
                       uncensored: bool = False) -> List[Dict]:
-        """جستجو در گوگل با استفاده از requests - بدون نیاز به کتابخونه اضافی"""
-        
-        # ساخت کوئری جستجو
-        query_parts = [anime_name, 'انیمه', 'دانلود']
+        query_parts = [f'"{anime_name}"', 'انیمه', 'دانلود']
         if quality:
             query_parts.append(quality)
         if dubbed:
@@ -84,88 +77,27 @@ class AnimeSearcher:
         
         try:
             logger.info(f"جستجوی گوگل برای: {query}")
+            search_results = list(search(query, num_results=12, lang='fa', stop=12))
             
-            # ساخت URL جستجوی گوگل
-            search_url = f"https://www.google.com/search?q={urllib.parse.quote(query)}&hl=fa&num=20"
-            
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Accept-Language': 'fa-IR,fa;q=0.9,en-US;q=0.8,en;q=0.7',
-                'Accept-Encoding': 'gzip, deflate, br',
-                'Connection': 'keep-alive',
-                'Upgrade-Insecure-Requests': '1'
-            }
-            
-            response = requests.get(search_url, headers=headers, timeout=15)
-            
-            if response.status_code == 200:
-                # استخراج لینک‌ها از HTML
-                html_content = response.text
+            for url in search_results:
+                if url in seen_urls:
+                    continue
+                seen_urls.add(url)
                 
-                # پیدا کردن لینک‌های نتایج جستجو
-                pattern = r'<a[^>]+href="(/url\?q=[^"]+)"[^>]*>'
-                matches = re.findall(pattern, html_content)
+                is_trusted = any(site in url for site in self.trusted_sites)
                 
-                for match in matches[:15]:
-                    # استخراج URL واقعی
-                    url_part = match.replace('/url?q=', '').split('&')[0]
-                    url = urllib.parse.unquote(url_part)
-                    
-                    # فیلتر کردن لینک‌های بی‌ربط
-                    if (url.startswith('http') and 
-                        'google' not in url and 
-                        'youtube' not in url and
-                        'facebook' not in url and
-                        'twitter' not in url and
-                        'instagram' not in url and
-                        url not in seen_urls):
-                        
-                        seen_urls.add(url)
-                        
-                        is_trusted = any(site in url for site in self.trusted_sites)
-                        
-                        result = {
-                            'url': url,
-                            'title': self.extract_title(url, anime_name),
-                            'quality': self.detect_quality(url),
-                            'dubbed': self.detect_dubbed(url) or dubbed,
-                            'uncensored': self.detect_uncensored(url) or uncensored,
-                            'source': 'google',
-                            'trusted': is_trusted
-                        }
-                        results.append(result)
-                        
-                        if len(results) >= 8:
-                            break
+                result = {
+                    'url': url,
+                    'title': self.extract_title(url, anime_name),
+                    'quality': self.detect_quality(url),
+                    'dubbed': self.detect_dubbed(url) or dubbed,
+                    'uncensored': self.detect_uncensored(url) or uncensored,
+                    'source': 'google',
+                    'trusted': is_trusted
+                }
+                results.append(result)
             
-            # اگر نتیجه‌ای پیدا نشد، از روش جایگزین با استفاده از کتابخونه استفاده کن
-            if len(results) == 0:
-                logger.info("تلاش با روش جایگزین...")
-                try:
-                    # تلاش برای استفاده از کتابخونه googlesearch
-                    from googlesearch import search as gsearch
-                    for url in gsearch(query, num=10, stop=10, pause=2.0, lang='fa'):
-                        if url not in seen_urls and 'google' not in url and 'youtube' not in url:
-                            seen_urls.add(url)
-                            is_trusted = any(site in url for site in self.trusted_sites)
-                            result = {
-                                'url': url,
-                                'title': self.extract_title(url, anime_name),
-                                'quality': self.detect_quality(url),
-                                'dubbed': self.detect_dubbed(url) or dubbed,
-                                'uncensored': self.detect_uncensored(url) or uncensored,
-                                'source': 'google',
-                                'trusted': is_trusted
-                            }
-                            results.append(result)
-                            if len(results) >= 8:
-                                break
-                except Exception as e:
-                    logger.error(f"خطا در روش جایگزین: {e}")
-            
-            # مرتب‌سازی نتایج: اول سایت‌های معتبر، بعد کیفیت بالاتر
-            results.sort(key=lambda x: (not x['trusted'], x['quality'] != '1080p', x['quality'] != '720p'))
+            results.sort(key=lambda x: (not x['trusted'], x['quality'] != '1080p'))
             
         except Exception as e:
             logger.error(f"خطا در جستجوی گوگل: {e}")
@@ -173,21 +105,13 @@ class AnimeSearcher:
         return results[:8]
     
     def extract_title(self, url: str, default_name: str) -> str:
-        """استخراج عنوان از لینک"""
-        # سعی در استخراج اسم از URL
         url_parts = url.split('/')
         for part in url_parts:
-            part_clean = part.replace('-', ' ').replace('_', ' ').replace('.', ' ')
-            # بررسی اینکه آیا بخشی از اسم انیمه در URL هست
-            for anime in self.popular_anime:
-                if anime in part_clean.lower():
-                    return part_clean.title()
-        
-        # اگر پیدا نشد، اسم پیش‌فرض رو برگردون
+            if any(anime in part.lower() for anime in self.popular_anime):
+                return part.replace('-', ' ').replace('_', ' ').title()
         return default_name.title()
     
     def detect_quality(self, url: str) -> str:
-        """تشخیص کیفیت از لینک"""
         url_lower = url.lower()
         if '1080' in url_lower or '1080p' in url_lower:
             return '1080p'
@@ -197,18 +121,14 @@ class AnimeSearcher:
             return '480p'
         elif '4k' in url_lower:
             return '4K'
-        elif 'hd' in url_lower:
-            return 'HD'
         return 'متغیر'
     
     def detect_dubbed(self, url: str) -> bool:
-        """تشخیص دوبله بودن"""
         url_lower = url.lower()
         keywords = ['دوبله', 'dubbed', 'dub', 'persian', 'فارسی']
         return any(keyword in url_lower for keyword in keywords)
     
     def detect_uncensored(self, url: str) -> bool:
-        """تشخیص بدون سانسور بودن"""
         url_lower = url.lower()
         keywords = ['uncensored', 'بدون سانسور', 'بی‌سانسور']
         return any(keyword in url_lower for keyword in keywords)
@@ -297,7 +217,7 @@ class AnimeBot:
         display_results = results[:5]
         
         for i, result in enumerate(display_results, 1):
-            quality_icons = {'1080p': '📺', '720p': '💻', '480p': '📱', '4K': '🖥️', 'HD': '📹', 'متغیر': '📹'}
+            quality_icons = {'1080p': '📺', '720p': '💻', '480p': '📱', '4K': '🖥️', 'متغیر': '📹'}
             quality_icon = quality_icons.get(result['quality'], '📹')
             
             dub_text = "🎙️ دوبله فارسی" if result['dubbed'] else "📝 زیرنویس"
@@ -562,9 +482,8 @@ class AnimeBot:
         except (ValueError, IndexError):
             await query.edit_message_text("❌ خطا در دانلود!", parse_mode='Markdown')
 
-# ============ اجرای ربات با مدیریت صحیح ============
-async def run_bot():
-    """تابع اصلی اجرای ربات"""
+# ============ اجرای ربات ============
+def main():
     try:
         bot = AnimeBot()
         application = Application.builder().token(TOKEN).build()
@@ -573,43 +492,11 @@ async def run_bot():
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_search))
         application.add_handler(CallbackQueryHandler(bot.handle_callback))
         
-        logger.info("🤖 ربات انیمه در حال راه‌اندازی...")
+        logger.info("🤖 ربات انیمه راه‌اندازی شد!")
+        application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
         
-        # پاک کردن وبهوک برای رفع Conflict
-        try:
-            await application.bot.delete_webhook()
-            logger.info("✅ وبهوک پاک شد")
-        except Exception as e:
-            logger.warning(f"خطا در پاک کردن وبهوک: {e}")
-        
-        # شروع پولینگ
-        await application.initialize()
-        await application.start()
-        await application.updater.start_polling()
-        
-        logger.info("✅ ربات انیمه با موفقیت راه‌اندازی شد!")
-        logger.info("📱 ربات آماده دریافت پیام‌هاست!")
-        
-        # نگه داشتن ربات در حال اجرا
-        while True:
-            await asyncio.sleep(1)
-            
     except Exception as e:
         logger.error(f"خطا در راه‌اندازی ربات: {e}")
-        raise
-    finally:
-        if 'application' in locals():
-            await application.stop()
-            await application.shutdown()
-
-def main():
-    """ورودی اصلی برنامه"""
-    try:
-        asyncio.run(run_bot())
-    except KeyboardInterrupt:
-        logger.info("🛑 ربات متوقف شد")
-    except Exception as e:
-        logger.error(f"خطای اصلی: {e}")
 
 if __name__ == "__main__":
     main()
