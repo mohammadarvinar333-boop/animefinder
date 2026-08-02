@@ -78,7 +78,7 @@ class AnimeSearcher:
         
         try:
             logger.info(f"جستجوی گوگل برای: {query}")
-            search_results = list(search(query, num_results=12, lang='fa', stop=12))
+            search_results = list(search(query, num=12, lang='fa', stop=12))
             
             for url in search_results:
                 if url in seen_urls:
