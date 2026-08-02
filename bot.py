@@ -2,6 +2,7 @@ import os
 import re
 import json
 import logging
+import asyncio
 from typing import List, Dict, Optional
 from datetime import datetime
 import requests
@@ -482,8 +483,9 @@ class AnimeBot:
         except (ValueError, IndexError):
             await query.edit_message_text("❌ خطا در دانلود!", parse_mode='Markdown')
 
-# ============ اجرای ربات ============
-def main():
+# ============ اجرای ربات با مدیریت صحیح Event Loop ============
+async def run_bot():
+    """تابع اصلی اجرای ربات با مدیریت Event Loop"""
     try:
         bot = AnimeBot()
         application = Application.builder().token(TOKEN).build()
@@ -492,12 +494,35 @@ def main():
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_search))
         application.add_handler(CallbackQueryHandler(bot.handle_callback))
         
-        logger.info("🤖 ربات انیمه راه‌اندازی شد!")
-        # تغییر این خط برای رفع خطای Render
-        application.run_polling()
+        logger.info("🤖 ربات انیمه در حال راه‌اندازی...")
         
+        # شروع پولینگ با مدیریت صحیح
+        await application.initialize()
+        await application.start()
+        await application.updater.start_polling()
+        
+        logger.info("✅ ربات انیمه با موفقیت راه‌اندازی شد!")
+        
+        # نگه داشتن ربات در حال اجرا
+        while True:
+            await asyncio.sleep(1)
+            
     except Exception as e:
         logger.error(f"خطا در راه‌اندازی ربات: {e}")
+        raise
+    finally:
+        if 'application' in locals():
+            await application.stop()
+            await application.shutdown()
+
+def main():
+    """ورودی اصلی برنامه"""
+    try:
+        asyncio.run(run_bot())
+    except KeyboardInterrupt:
+        logger.info("🛑 ربات متوقف شد")
+    except Exception as e:
+        logger.error(f"خطای اصلی: {e}")
 
 if __name__ == "__main__":
     main()
