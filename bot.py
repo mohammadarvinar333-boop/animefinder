@@ -1,10 +1,12 @@
 import os
 import re
 import json
+import asyncio
 import logging
 from typing import List, Dict, Optional
 from datetime import datetime
 import requests
+import telegram
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from googlesearch import search
@@ -483,20 +485,88 @@ class AnimeBot:
             await query.edit_message_text("❌ خطا در دانلود!", parse_mode='Markdown')
 
 # ============ اجرای ربات ============
+async def run_polling_loop(application):
+    """حلقه پولینگ دستی که خطای Conflict را مدیریت می‌کند."""
+    # با offset=-1 شروع می‌کنیم تا آپدیت‌های قدیمی حذف و
+    # اتصال stale از سرویس قبلی باطل شود (رفع خطای Conflict)
+    offset = -1
+    consecutive_conflicts = 0
+
+    while True:
+        try:
+            updates = await application.bot.get_updates(
+                offset=offset,
+                timeout=15,
+                allowed_updates=Update.ALL_TYPES,
+            )
+            consecutive_conflicts = 0
+        except telegram.error.Conflict:
+            consecutive_conflicts += 1
+            logger.warning(
+                f"⚠️ Conflict در getUpdates (جلسهٔ قدیمی فعال است). "
+                f"صبر و بازیابی... ({consecutive_conflicts})"
+            )
+            # با ریست کردن offset به -1 همهٔ آپدیت‌های معلق حذف و
+            # اتصال قبلی باطل می‌شود تا Conflict رفع شود.
+            offset = -1
+            await asyncio.sleep(5)
+            continue
+        except telegram.error.TimedOut:
+            logger.warning("⏰ Timeout در getUpdates، تلاش دوباره...")
+            await asyncio.sleep(3)
+            continue
+        except telegram.error.NetworkError as e:
+            logger.warning(f"🌐 خطای شبکه: {e}")
+            await asyncio.sleep(5)
+            continue
+        except Exception as e:
+            logger.error(f"خطای غیرمنتظره در getUpdates: {e}")
+            await asyncio.sleep(10)
+            continue
+
+        for update in updates:
+            offset = update.update_id + 1
+            try:
+                await application.process_update(update)
+            except telegram.error.Conflict:
+                logger.warning("⚠️ Conflict هنگام پردازش آپدیت.")
+                offset = -1
+                break
+            except Exception as e:
+                logger.error(f"خطا در پردازش آپدیت: {e}")
+
+
+async def main_async():
+    while True:
+        application = None
+        try:
+            bot = AnimeBot()
+            application = Application.builder().token(TOKEN).build()
+
+            application.add_handler(CommandHandler("start", bot.start))
+            application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_search))
+            application.add_handler(CallbackQueryHandler(bot.handle_callback))
+
+            await application.initialize()
+            await application.start()
+
+            logger.info("🤖 ربات انیمه راه‌اندازی شد!")
+            await run_polling_loop(application)
+
+        except Exception as e:
+            logger.error(f"خطا در راه‌اندازی ربات: {e}")
+            await asyncio.sleep(5)
+        finally:
+            if application is not None:
+                try:
+                    await application.stop()
+                    await application.shutdown()
+                except Exception:
+                    logger.exception("خطا هنگام توقف application")
+
+
 def main():
-    try:
-        bot = AnimeBot()
-        application = Application.builder().token(TOKEN).build()
-        
-        application.add_handler(CommandHandler("start", bot.start))
-        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_search))
-        application.add_handler(CallbackQueryHandler(bot.handle_callback))
-        
-        logger.info("🤖 ربات انیمه راه‌اندازی شد!")
-        application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
-        
-    except Exception as e:
-        logger.error(f"خطا در راه‌اندازی ربات: {e}")
+    asyncio.run(main_async())
 
 if __name__ == "__main__":
     main()
