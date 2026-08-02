@@ -1,14 +1,18 @@
 import os
 import re
 import json
+import time
 import asyncio
 import logging
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import List, Dict, Optional
 from datetime import datetime
 import requests
 import telegram
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+from bs4 import BeautifulSoup
 from googlesearch import search
 
 # ============ تنظیمات ============
@@ -104,8 +108,62 @@ class AnimeSearcher:
         except Exception as e:
             logger.error(f"خطا در جستجوی گوگل: {e}")
         
+        # اگر گوگل نتیجه‌ای نداد، از DuckDuckGo استفاده می‌کنیم
+        if not results:
+            results = self._duckduckgo_search(query, anime_name, quality, dubbed, uncensored)
+            results.sort(key=lambda x: (not x['trusted'], x['quality'] != '1080p'))
+        
         return results[:8]
     
+    def _duckduckgo_search(self, query: str, anime_name: str, quality: str = None,
+                           dubbed: bool = False, uncensored: bool = False) -> List[Dict]:
+        """جستجوی جایگزین از طریق DuckDuckGo HTML (بدون API key)."""
+        results = []
+        seen_urls = set()
+        try:
+            logger.info(f"جستجوی جایگزین برای: {query}")
+            url = "https://html.duckduckgo.com/html/"
+            params = {"q": query}
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36'
+            }
+            resp = requests.get(url, params=params, headers=headers, timeout=20)
+            if resp.status_code != 200:
+                logger.warning(f"DuckDuckGo status {resp.status_code}")
+                return results
+
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            for link in soup.select('a.result__a')[:12]:
+                link_url = link.get('href', '')
+                if link_url.startswith('//duckduckgo.com/l/'):
+                    # استخراج آدرس real از پارامتر udd
+                    m = re.search(r'uddg=([^&]+)', link_url)
+                    if m:
+                        try:
+                            from urllib.parse import unquote
+                            link_url = unquote(m.group(1))
+                        except Exception:
+                            link_url = link.get_text()
+                if not link_url.startswith('http'):
+                    continue
+                if link_url in seen_urls:
+                    continue
+                seen_urls.add(link_url)
+
+                is_trusted = any(site in link_url for site in self.trusted_sites)
+                results.append({
+                    'url': link_url,
+                    'title': link.get_text(strip=True) or self.extract_title(link_url, anime_name),
+                    'quality': self.detect_quality(link_url),
+                    'dubbed': self.detect_dubbed(link_url) or dubbed,
+                    'uncensored': self.detect_uncensored(link_url) or uncensored,
+                    'source': 'duckduckgo',
+                    'trusted': is_trusted
+                })
+        except Exception as e:
+            logger.error(f"خطا در جستجوی DuckDuckGo: {e}")
+        return results
+
     def extract_title(self, url: str, default_name: str) -> str:
         url_parts = url.split('/')
         for part in url_parts:
@@ -485,6 +543,33 @@ class AnimeBot:
             await query.edit_message_text("❌ خطا در دانلود!", parse_mode='Markdown')
 
 # ============ اجرای ربات ============
+class HealthHandler(BaseHTTPRequestHandler):
+    """شناخته‌سازی سلامت برای Render تا سرویس پایدار و تک‌نمونه بماند."""
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.end_headers()
+        try:
+            self.wfile.write(b"ok")
+        except Exception:
+            pass
+
+    def log_message(self, format, *args):
+        return
+
+
+def start_health_server():
+    """سرور HTTP کوچک روی PORT برای رفع مشکل 'No open ports' در Render."""
+    port = int(os.getenv("PORT", "8080"))
+    try:
+        httpd = ThreadingHTTPServer(("0.0.0.0", port), HealthHandler)
+        t = threading.Thread(target=httpd.serve_forever, daemon=True)
+        t.start()
+        logger.info(f"✅ سرور سلامت روی پورت {port} راه‌اندازی شد.")
+    except Exception as e:
+        logger.warning(f"⚠️ امکان راه‌اندازی سرور سلامت وجود نداشت: {e}")
+
+
 async def run_polling_loop(application):
     """حلقه پولینگ دستی که خطای Conflict را مدیریت می‌کند."""
     # با offset=-1 شروع می‌کنیم تا آپدیت‌های قدیمی حذف و
@@ -537,6 +622,8 @@ async def run_polling_loop(application):
 
 
 async def main_async():
+    start_health_server()
+
     while True:
         application = None
         try:
