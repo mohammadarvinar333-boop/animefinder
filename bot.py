@@ -59,11 +59,11 @@ class AnimeSearcher:
             'iran-anime.ir', 'animeworld.ir', 'anime-4u.ir'
         ]
         
-        # Cache برای نتایج جستجو (کاهش درخواست‌های تکراری)
+        # Cache برای نتایج جستجو
         self.search_cache = {}
         self.cache_timeout = 300  # 5 دقیقه
         
-        # لیست User-Agent های مختلف برای چرخش
+        # لیست User-Agent های مختلف
         self.user_agents = [
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
@@ -115,21 +115,16 @@ class AnimeSearcher:
         results = []
         seen_urls = set()
         
-        # تلاش با User-Agent های مختلف
+        # تلاش با تاخیرهای مختلف
         for attempt in range(3):
             try:
-                user_agent = random.choice(self.user_agents)
                 logger.info(f"جستجوی گوگل برای: {query} (تلاش {attempt+1})")
                 
-                # استفاده از تاخیر تصادفی برای جلوگیری از Block
+                # تاخیر تصادفی
                 time.sleep(random.uniform(2, 5))
                 
-                search_results = list(search(
-                    query, 
-                    num_results=12, 
-                    lang='fa',
-                    user_agent=user_agent
-                ))
+                # استفاده از کتابخونه googlesearch بدون پارامتر user_agent
+                search_results = list(search(query, num_results=12, lang='fa'))
                 
                 if search_results:
                     for url in search_results:
@@ -174,6 +169,11 @@ class AnimeSearcher:
             simple_query = f'"{anime_name}" انیمه دانلود'
             results = self._duckduckgo_search(simple_query, anime_name, quality, dubbed, uncensored)
         
+        # اگر باز هم نتیجه‌ای نداشتیم، از روش جایگزین با Requests استفاده می‌کنیم
+        if not results:
+            logger.info("🔄 تلاش با روش Requests مستقیم")
+            results = self._search_with_requests(anime_name, quality, dubbed, uncensored)
+        
         # مرتب‌سازی نتایج
         results.sort(key=lambda x: (not x['trusted'], x['quality'] != '1080p'))
         
@@ -183,9 +183,71 @@ class AnimeSearcher:
         
         return results[:8]
     
+    def _search_with_requests(self, anime_name: str, quality: str = None, 
+                              dubbed: bool = False, uncensored: bool = False) -> List[Dict]:
+        """جستجوی جایگزین با استفاده از Requests مستقیم"""
+        results = []
+        seen_urls = set()
+        
+        try:
+            # ساخت query
+            query_parts = [anime_name, 'انیمه', 'دانلود', 'لینک مستقیم']
+            if quality:
+                query_parts.append(quality)
+            if dubbed:
+                query_parts.append('دوبله فارسی')
+            if uncensored:
+                query_parts.append('بدون سانسور')
+            
+            query = ' '.join(query_parts)
+            
+            # استفاده از DuckDuckGo API غیررسمی
+            url = "https://api.duckduckgo.com/"
+            params = {
+                'q': query,
+                'format': 'json',
+                'no_html': 1,
+                'skip_disambig': 1
+            }
+            
+            headers = {
+                'User-Agent': random.choice(self.user_agents)
+            }
+            
+            response = requests.get(url, params=params, headers=headers, timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
+                # استخراج نتایج از RelatedTopics
+                for topic in data.get('RelatedTopics', []):
+                    if 'Result' in topic:
+                        # استخراج URL از HTML
+                        html = topic.get('Result', '')
+                        url_match = re.search(r'href="([^"]+)"', html)
+                        if url_match:
+                            link_url = url_match.group(1)
+                            if link_url.startswith('/'):
+                                link_url = 'https://duckduckgo.com' + link_url
+                            if link_url not in seen_urls and link_url.startswith('http'):
+                                seen_urls.add(link_url)
+                                is_trusted = any(site in link_url for site in self.trusted_sites)
+                                results.append({
+                                    'url': link_url,
+                                    'title': self.extract_title(link_url, anime_name),
+                                    'quality': self.detect_quality(link_url),
+                                    'dubbed': self.detect_dubbed(link_url) or dubbed,
+                                    'uncensored': self.detect_uncensored(link_url) or uncensored,
+                                    'source': 'duckduckgo_api',
+                                    'trusted': is_trusted
+                                })
+        except Exception as e:
+            logger.error(f"خطا در جستجوی Requests: {e}")
+        
+        return results
+    
     def _duckduckgo_search(self, query: str, anime_name: str, quality: str = None,
                            dubbed: bool = False, uncensored: bool = False) -> List[Dict]:
-        """جستجوی جایگزین از طریق DuckDuckGo HTML (بدون API key) با timeout کمتر"""
+        """جستجوی جایگزین از طریق DuckDuckGo HTML با timeout بیشتر"""
         results = []
         seen_urls = set()
         
@@ -195,7 +257,6 @@ class AnimeSearcher:
                 url = "https://html.duckduckgo.com/html/"
                 params = {"q": query}
                 
-                # چرخش User-Agent
                 headers = {
                     'User-Agent': random.choice(self.user_agents),
                     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -209,27 +270,22 @@ class AnimeSearcher:
                 # تاخیر تصادفی
                 time.sleep(random.uniform(1, 3))
                 
-                resp = requests.get(url, params=params, headers=headers, timeout=15)
+                resp = requests.get(url, params=params, headers=headers, timeout=25)
                 
                 if resp.status_code == 200:
                     soup = BeautifulSoup(resp.text, 'html.parser')
-                    # انتخابگرهای مختلف برای DuckDuckGo
                     for link in soup.select('a.result__a')[:12]:
                         link_url = link.get('href', '')
                         
-                        # استخراج آدرس واقعی از redirect DuckDuckGo
                         if link_url.startswith('//duckduckgo.com/l/'):
                             import urllib.parse
                             parsed = urllib.parse.urlparse(link_url)
                             query_params = urllib.parse.parse_qs(parsed.query)
                             if 'uddg' in query_params:
                                 try:
-                                    import base64
                                     import urllib.parse
                                     uddg = query_params['uddg'][0]
-                                    # Decode URL
                                     decoded = urllib.parse.unquote(uddg)
-                                    # استخراج URL واقعی
                                     if 'http' in decoded:
                                         link_url = decoded.split('http')[1]
                                         link_url = 'http' + link_url
