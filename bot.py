@@ -5,6 +5,7 @@ import time
 import asyncio
 import logging
 import threading
+import random
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import List, Dict, Optional
 from datetime import datetime
@@ -57,6 +58,19 @@ class AnimeSearcher:
             'animekhor.ir', 'animelab.ir', 'animeshow.ir',
             'iran-anime.ir', 'animeworld.ir', 'anime-4u.ir'
         ]
+        
+        # Cache برای نتایج جستجو (کاهش درخواست‌های تکراری)
+        self.search_cache = {}
+        self.cache_timeout = 300  # 5 دقیقه
+        
+        # لیست User-Agent های مختلف برای چرخش
+        self.user_agents = [
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0'
+        ]
     
     def correct_spelling(self, name: str) -> str:
         from difflib import get_close_matches
@@ -66,8 +80,28 @@ class AnimeSearcher:
         matches = get_close_matches(name, self.popular_anime, n=1, cutoff=0.6)
         return matches[0] if matches else name
     
+    def _get_cache_key(self, anime_name: str, quality: str = None, dubbed: bool = False, 
+                      uncensored: bool = False) -> str:
+        return f"{anime_name}_{quality}_{dubbed}_{uncensored}"
+    
+    def _get_from_cache(self, key: str) -> Optional[List[Dict]]:
+        if key in self.search_cache:
+            data, timestamp = self.search_cache[key]
+            if time.time() - timestamp < self.cache_timeout:
+                logger.info(f"📦 استفاده از کش برای: {key}")
+                return data
+        return None
+    
+    def _save_to_cache(self, key: str, data: List[Dict]):
+        self.search_cache[key] = (data, time.time())
+    
     def search_google(self, anime_name: str, quality: str = None, dubbed: bool = False, 
                       uncensored: bool = False) -> List[Dict]:
+        cache_key = self._get_cache_key(anime_name, quality, dubbed, uncensored)
+        cached_result = self._get_from_cache(cache_key)
+        if cached_result:
+            return cached_result
+        
         query_parts = [f'"{anime_name}"', 'انیمه', 'دانلود']
         if quality:
             query_parts.append(quality)
@@ -81,89 +115,160 @@ class AnimeSearcher:
         results = []
         seen_urls = set()
         
-        try:
-            logger.info(f"جستجوی گوگل برای: {query}")
-            search_results = list(search(query, num_results=12, lang='fa'))
-            
-            for url in search_results:
-                if url in seen_urls:
-                    continue
-                seen_urls.add(url)
+        # تلاش با User-Agent های مختلف
+        for attempt in range(3):
+            try:
+                user_agent = random.choice(self.user_agents)
+                logger.info(f"جستجوی گوگل برای: {query} (تلاش {attempt+1})")
                 
-                is_trusted = any(site in url for site in self.trusted_sites)
+                # استفاده از تاخیر تصادفی برای جلوگیری از Block
+                time.sleep(random.uniform(2, 5))
                 
-                result = {
-                    'url': url,
-                    'title': self.extract_title(url, anime_name),
-                    'quality': self.detect_quality(url),
-                    'dubbed': self.detect_dubbed(url) or dubbed,
-                    'uncensored': self.detect_uncensored(url) or uncensored,
-                    'source': 'google',
-                    'trusted': is_trusted
-                }
-                results.append(result)
-            
-            results.sort(key=lambda x: (not x['trusted'], x['quality'] != '1080p'))
-            
-        except Exception as e:
-            logger.error(f"خطا در جستجوی گوگل: {e}")
+                search_results = list(search(
+                    query, 
+                    num_results=12, 
+                    lang='fa',
+                    user_agent=user_agent
+                ))
+                
+                if search_results:
+                    for url in search_results:
+                        if url in seen_urls:
+                            continue
+                        seen_urls.add(url)
+                        
+                        is_trusted = any(site in url for site in self.trusted_sites)
+                        
+                        result = {
+                            'url': url,
+                            'title': self.extract_title(url, anime_name),
+                            'quality': self.detect_quality(url),
+                            'dubbed': self.detect_dubbed(url) or dubbed,
+                            'uncensored': self.detect_uncensored(url) or uncensored,
+                            'source': 'google',
+                            'trusted': is_trusted
+                        }
+                        results.append(result)
+                    
+                    # اگر نتیجه گرفتیم، از حلقه خارج می‌شیم
+                    if results:
+                        break
+                    
+            except Exception as e:
+                logger.warning(f"خطا در تلاش {attempt+1} گوگل: {e}")
+                # اگر خطای 429 بود، بیشتر صبر می‌کنیم
+                if "429" in str(e):
+                    wait_time = (attempt + 1) * 10
+                    logger.info(f"⏳ خطای 429، صبر {wait_time} ثانیه...")
+                    time.sleep(wait_time)
+                continue
         
         # اگر گوگل نتیجه‌ای نداد، از DuckDuckGo استفاده می‌کنیم
         if not results:
+            logger.info("🔄 استفاده از DuckDuckGo به عنوان جایگزین")
             results = self._duckduckgo_search(query, anime_name, quality, dubbed, uncensored)
-            results.sort(key=lambda x: (not x['trusted'], x['quality'] != '1080p'))
+        
+        # اگر هیچ نتیجه‌ای نداشتیم، با کلمات کلیدی ساده‌تر تلاش می‌کنیم
+        if not results:
+            logger.info("🔄 تلاش با کلمات کلیدی ساده‌تر")
+            simple_query = f'"{anime_name}" انیمه دانلود'
+            results = self._duckduckgo_search(simple_query, anime_name, quality, dubbed, uncensored)
+        
+        # مرتب‌سازی نتایج
+        results.sort(key=lambda x: (not x['trusted'], x['quality'] != '1080p'))
+        
+        # ذخیره در کش
+        if results:
+            self._save_to_cache(cache_key, results[:8])
         
         return results[:8]
     
     def _duckduckgo_search(self, query: str, anime_name: str, quality: str = None,
                            dubbed: bool = False, uncensored: bool = False) -> List[Dict]:
-        """جستجوی جایگزین از طریق DuckDuckGo HTML (بدون API key)."""
+        """جستجوی جایگزین از طریق DuckDuckGo HTML (بدون API key) با timeout کمتر"""
         results = []
         seen_urls = set()
-        try:
-            logger.info(f"جستجوی جایگزین برای: {query}")
-            url = "https://html.duckduckgo.com/html/"
-            params = {"q": query}
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36'
-            }
-            resp = requests.get(url, params=params, headers=headers, timeout=20)
-            if resp.status_code != 200:
-                logger.warning(f"DuckDuckGo status {resp.status_code}")
-                return results
-
-            soup = BeautifulSoup(resp.text, 'html.parser')
-            for link in soup.select('a.result__a')[:12]:
-                link_url = link.get('href', '')
-                if link_url.startswith('//duckduckgo.com/l/'):
-                    # استخراج آدرس real از پارامتر udd
-                    m = re.search(r'uddg=([^&]+)', link_url)
-                    if m:
-                        try:
-                            from urllib.parse import unquote
-                            link_url = unquote(m.group(1))
-                        except Exception:
-                            link_url = link.get_text()
-                if not link_url.startswith('http'):
-                    continue
-                if link_url in seen_urls:
-                    continue
-                seen_urls.add(link_url)
-
-                is_trusted = any(site in link_url for site in self.trusted_sites)
-                results.append({
-                    'url': link_url,
-                    'title': link.get_text(strip=True) or self.extract_title(link_url, anime_name),
-                    'quality': self.detect_quality(link_url),
-                    'dubbed': self.detect_dubbed(link_url) or dubbed,
-                    'uncensored': self.detect_uncensored(link_url) or uncensored,
-                    'source': 'duckduckgo',
-                    'trusted': is_trusted
-                })
-        except Exception as e:
-            logger.error(f"خطا در جستجوی DuckDuckGo: {e}")
+        
+        for attempt in range(2):
+            try:
+                logger.info(f"جستجوی DuckDuckGo برای: {query} (تلاش {attempt+1})")
+                url = "https://html.duckduckgo.com/html/"
+                params = {"q": query}
+                
+                # چرخش User-Agent
+                headers = {
+                    'User-Agent': random.choice(self.user_agents),
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                    'Accept-Language': 'fa-IR,fa;q=0.9,en-US;q=0.8,en;q=0.7',
+                    'Accept-Encoding': 'gzip, deflate, br',
+                    'DNT': '1',
+                    'Connection': 'keep-alive',
+                    'Upgrade-Insecure-Requests': '1'
+                }
+                
+                # تاخیر تصادفی
+                time.sleep(random.uniform(1, 3))
+                
+                resp = requests.get(url, params=params, headers=headers, timeout=15)
+                
+                if resp.status_code == 200:
+                    soup = BeautifulSoup(resp.text, 'html.parser')
+                    # انتخابگرهای مختلف برای DuckDuckGo
+                    for link in soup.select('a.result__a')[:12]:
+                        link_url = link.get('href', '')
+                        
+                        # استخراج آدرس واقعی از redirect DuckDuckGo
+                        if link_url.startswith('//duckduckgo.com/l/'):
+                            import urllib.parse
+                            parsed = urllib.parse.urlparse(link_url)
+                            query_params = urllib.parse.parse_qs(parsed.query)
+                            if 'uddg' in query_params:
+                                try:
+                                    import base64
+                                    import urllib.parse
+                                    uddg = query_params['uddg'][0]
+                                    # Decode URL
+                                    decoded = urllib.parse.unquote(uddg)
+                                    # استخراج URL واقعی
+                                    if 'http' in decoded:
+                                        link_url = decoded.split('http')[1]
+                                        link_url = 'http' + link_url
+                                        if '&' in link_url:
+                                            link_url = link_url.split('&')[0]
+                                except Exception:
+                                    pass
+                        
+                        if not link_url.startswith('http'):
+                            continue
+                        if link_url in seen_urls:
+                            continue
+                        seen_urls.add(link_url)
+                        
+                        is_trusted = any(site in link_url for site in self.trusted_sites)
+                        results.append({
+                            'url': link_url,
+                            'title': link.get_text(strip=True) or self.extract_title(link_url, anime_name),
+                            'quality': self.detect_quality(link_url),
+                            'dubbed': self.detect_dubbed(link_url) or dubbed,
+                            'uncensored': self.detect_uncensored(link_url) or uncensored,
+                            'source': 'duckduckgo',
+                            'trusted': is_trusted
+                        })
+                    
+                    if results:
+                        break
+                else:
+                    logger.warning(f"DuckDuckGo status {resp.status_code}")
+                    
+            except requests.exceptions.Timeout:
+                logger.warning(f"⏰ Timeout در DuckDuckGo (تلاش {attempt+1})")
+                time.sleep(3)
+            except Exception as e:
+                logger.warning(f"خطا در DuckDuckGo (تلاش {attempt+1}): {e}")
+                time.sleep(2)
+        
         return results
-
+    
     def extract_title(self, url: str, default_name: str) -> str:
         url_parts = url.split('/')
         for part in url_parts:
@@ -212,7 +317,7 @@ class AnimeBot:
         welcome_text = (
             "🎬 **به ربات جستجوگر انیمه خوش آمدید!**\n\n"
             "✨ **قابلیت‌ها:**\n"
-            "• جستجو در گوگل\n"
+            "• جستجو در گوگل و DuckDuckGo\n"
             "• لینک دانلود مستقیم\n"
             "• کیفیت‌های مختلف\n"
             "• تشخیص دوبله و زیرنویس\n"
@@ -542,7 +647,7 @@ class AnimeBot:
         except (ValueError, IndexError):
             await query.edit_message_text("❌ خطا در دانلود!", parse_mode='Markdown')
 
-# ============ اجرای ربات ============
+# ============ سرور سلامت ============
 class HealthHandler(BaseHTTPRequestHandler):
     """شناخته‌سازی سلامت برای Render تا سرویس پایدار و تک‌نمونه بماند."""
     def do_GET(self):
@@ -572,8 +677,6 @@ def start_health_server():
 
 async def run_polling_loop(application):
     """حلقه پولینگ دستی که خطای Conflict را مدیریت می‌کند."""
-    # با offset=-1 شروع می‌کنیم تا آپدیت‌های قدیمی حذف و
-    # اتصال stale از سرویس قبلی باطل شود (رفع خطای Conflict)
     offset = -1
     consecutive_conflicts = 0
 
@@ -591,8 +694,6 @@ async def run_polling_loop(application):
                 f"⚠️ Conflict در getUpdates (جلسهٔ قدیمی فعال است). "
                 f"صبر و بازیابی... ({consecutive_conflicts})"
             )
-            # با ریست کردن offset به -1 همهٔ آپدیت‌های معلق حذف و
-            # اتصال قبلی باطل می‌شود تا Conflict رفع شود.
             offset = -1
             await asyncio.sleep(5)
             continue
