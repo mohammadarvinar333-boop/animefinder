@@ -31,6 +31,23 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # ============ تنظیمات ============
 TOKEN = "8876632730:AAEplhdqqb24CPLWe6BzF0QIvMuwboQpLNI"
 
+# ============ لیست پروکسی‌های ایران ============
+IRANIAN_PROXIES = [
+    {"http": "http://194.1.155.253:9080", "https": "http://194.1.155.253:9080"},
+    {"http": "http://95.38.160.79:10809", "https": "http://95.38.160.79:10809"},
+    {"http": "http://81.91.159.14:7776", "https": "http://81.91.159.14:7776"},
+    {"http": "http://2.188.210.5:4443", "https": "http://2.188.210.5:4443"},
+    {"http": "http://37.32.29.226:2080", "https": "http://37.32.29.226:2080"},
+    {"http": "http://5.160.247.48:8443", "https": "http://5.160.247.48:8443"},
+    {"http": "http://185.129.213.210:8080", "https": "http://185.129.213.210:8080"},
+    {"http": "http://37.255.203.235:8080", "https": "http://37.255.203.235:8080"},
+    {"http": "http://109.95.61.203:1080", "https": "http://109.95.61.203:1080"},
+    {"http": "http://37.27.6.46:80", "https": "http://37.27.6.46:80"},
+    {"http": "http://5.161.103.41:88", "https": "http://5.161.103.41:88"},
+    {"http": "http://185.231.183.10:3128", "https": "http://185.231.183.10:3128"},
+    {"http": "http://94.183.149.84:1180", "https": "http://94.183.149.84:1180"},
+]
+
 # ============ لاگینگ ============
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -134,8 +151,12 @@ class AnimeSearcher:
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0",
         ]
 
-        self.engine_timeout = 15
-        self.overall_timeout = 30
+        self.engine_timeout = 20
+        self.overall_timeout = 35
+
+    def _get_random_proxy(self) -> Dict[str, str]:
+        """دریافت یک پروکسی تصادفی از لیست پروکسی‌های ایران"""
+        return random.choice(IRANIAN_PROXIES)
 
     def _headers(self, fa: bool = False) -> Dict[str, str]:
         headers = {
@@ -151,6 +172,57 @@ class AnimeSearcher:
         else:
             headers["Accept-Language"] = "en-US,en;q=0.9,fa;q=0.8"
         return headers
+
+    def _get_with_proxy(self, url: str, headers: Dict, timeout: int = 15) -> Optional[requests.Response]:
+        """ارسال درخواست با پروکسی و fallback به درخواست مستقیم"""
+        # تلاش با پروکسی
+        proxy = self._get_random_proxy()
+        try:
+            logger.info(f"🌐 استفاده از پروکسی: {proxy['http']}")
+            resp = requests.get(
+                url,
+                headers=headers,
+                proxies=proxy,
+                timeout=timeout,
+                verify=False,
+                allow_redirects=True
+            )
+            if resp.status_code == 200:
+                return resp
+        except Exception as e:
+            logger.warning(f"⚠️ پروکسی {proxy['http']} ناموفق: {str(e)[:50]}")
+
+        # تلاش با پروکسی بعدی
+        for _ in range(3):
+            proxy = self._get_random_proxy()
+            try:
+                resp = requests.get(
+                    url,
+                    headers=headers,
+                    proxies=proxy,
+                    timeout=timeout,
+                    verify=False,
+                    allow_redirects=True
+                )
+                if resp.status_code == 200:
+                    return resp
+            except Exception:
+                continue
+
+        # اگر همه پروکسی‌ها ناموفق بودند، درخواست مستقیم
+        logger.info("🔄 همه پروکسی‌ها ناموفق، درخواست مستقیم...")
+        try:
+            resp = requests.get(
+                url,
+                headers=headers,
+                timeout=timeout,
+                verify=False,
+                allow_redirects=True
+            )
+            return resp
+        except Exception as e:
+            logger.warning(f"❌ درخواست مستقیم هم ناموفق: {str(e)[:50]}")
+            return None
 
     def correct_spelling(self, name: str) -> str:
         from difflib import get_close_matches
@@ -238,7 +310,7 @@ class AnimeSearcher:
             "trusted": is_trusted,
         }
 
-    # ============ جستجوی مستقیم در سایت‌های ایرانی ============
+    # ============ جستجوی مستقیم در سایت‌های ایرانی با پروکسی ============
     def _search_iranian_sites_direct(
         self,
         anime_name: str,
@@ -246,7 +318,7 @@ class AnimeSearcher:
         dubbed: bool = False,
         uncensored: bool = False,
     ) -> List[Dict]:
-        """جستجوی مستقیم در سایت‌های ایرانی با بررسی ساختار"""
+        """جستجوی مستقیم در سایت‌های ایرانی با استفاده از پروکسی"""
         results: List[Dict] = []
         seen = set()
         headers = self._headers(fa=True)
@@ -265,18 +337,12 @@ class AnimeSearcher:
 
                 try:
                     search_url = site["search_url"].format(quote_plus(term))
-                    logger.info(f"🔍 جستجوی مستقیم در {site['name']}: {search_url}")
+                    logger.info(f"🔍 جستجوی مستقیم در {site['name']} با پروکسی: {search_url}")
 
-                    resp = requests.get(
-                        search_url,
-                        headers=headers,
-                        timeout=12,
-                        verify=False,
-                        allow_redirects=True
-                    )
+                    resp = self._get_with_proxy(search_url, headers, timeout=15)
 
-                    if resp.status_code != 200:
-                        logger.warning(f"⚠️ {site['name']} status: {resp.status_code}")
+                    if not resp or resp.status_code != 200:
+                        logger.warning(f"⚠️ {site['name']} status: {resp.status_code if resp else 'No response'}")
                         continue
 
                     soup = BeautifulSoup(resp.text, "html.parser")
@@ -389,14 +455,13 @@ class AnimeSearcher:
                 break
 
             try:
-                resp = requests.get(
+                resp = self._get_with_proxy(
                     "https://html.duckduckgo.com/html/",
-                    params={"q": query},
-                    headers=headers,
+                    {**headers, "params": {"q": query}},
                     timeout=self.engine_timeout
                 )
 
-                if resp.status_code != 200:
+                if not resp or resp.status_code != 200:
                     continue
 
                 soup = BeautifulSoup(resp.text, "html.parser")
@@ -448,13 +513,13 @@ class AnimeSearcher:
         headers = self._headers()
 
         try:
-            resp = requests.get(
+            resp = self._get_with_proxy(
                 "https://www.bing.com/search",
-                params={"q": query, "count": 25},
-                headers=headers,
+                {**headers, "params": {"q": query, "count": 25}},
                 timeout=self.engine_timeout,
             )
-            if resp.status_code != 200:
+
+            if not resp or resp.status_code != 200:
                 return results
 
             soup = BeautifulSoup(resp.text, "html.parser")
@@ -496,13 +561,13 @@ class AnimeSearcher:
         headers = self._headers()
 
         try:
-            resp = requests.get(
+            resp = self._get_with_proxy(
                 "https://www.mojeek.com/search",
-                params={"q": query},
-                headers=headers,
+                {**headers, "params": {"q": query}},
                 timeout=self.engine_timeout,
             )
-            if resp.status_code != 200:
+
+            if not resp or resp.status_code != 200:
                 return results
 
             soup = BeautifulSoup(resp.text, "html.parser")
@@ -558,8 +623,8 @@ class AnimeSearcher:
 
         all_results: List[Dict] = []
 
-        # ========== اولویت: جستجوی مستقیم در سایت‌های ایرانی ==========
-        logger.info("🇮🇷 جستجوی مستقیم در سایت‌های ایرانی...")
+        # ========== اولویت: جستجوی مستقیم در سایت‌های ایرانی با پروکسی ==========
+        logger.info("🇮🇷 جستجوی مستقیم در سایت‌های ایرانی با پروکسی...")
         direct_results = self._search_iranian_sites_direct(anime_name, quality, dubbed, uncensored)
         all_results.extend(direct_results)
         logger.info(f"🇮🇷 {len(direct_results)} نتیجه از سایت‌های ایرانی (مستقیم)")
@@ -819,7 +884,7 @@ class AnimeBot:
             disable_web_page_preview=True,
         )
 
-    # ============ بقیه متدها مثل قبل ============
+    # ============ بقیه متدها ============
     async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
         user_id = update.effective_user.id
