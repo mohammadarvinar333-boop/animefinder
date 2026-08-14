@@ -236,6 +236,17 @@ class AnimeSearcher:
 
         return url
 
+    def _is_iranian_site(self, url: str) -> bool:
+        """بررسی اینکه آیا URL متعلق به سایت ایرانی هست"""
+        iranian_domains = [
+            "animefa.ir", "animeonline.ir", "animex.ir", 
+            "animeworld.ir", "anime-4u.ir", "animekhor.ir",
+            "animelab.ir", "animeshow.ir", "iran-anime.ir",
+            "animedl.ir", "animecity.ir"
+        ]
+        url_lower = url.lower()
+        return any(domain in url_lower for domain in iranian_domains)
+
     def _make_result(
         self,
         url: str,
@@ -255,6 +266,9 @@ class AnimeSearcher:
         if quality and quality not in detected_quality:
             return None
 
+        # بررسی اینکه آیا سایت ایرانی هست
+        is_trusted = self._is_iranian_site(url)
+
         return {
             "url": url,
             "title": title or self.extract_title(url, anime_name),
@@ -262,7 +276,7 @@ class AnimeSearcher:
             "dubbed": self.detect_dubbed(text) or dubbed,
             "uncensored": self.detect_uncensored(text) or uncensored,
             "source": source,
-            "trusted": any(site in url.lower() for site in self.trusted_sites),
+            "trusted": is_trusted,
         }
 
     # ============ جستجو با DuckDuckGo ============
@@ -280,7 +294,7 @@ class AnimeSearcher:
         headers = self._headers(fa=True)
 
         for query in queries:
-            if len(results) >= 10:
+            if len(results) >= 12:
                 break
 
             try:
@@ -297,7 +311,7 @@ class AnimeSearcher:
                 soup = BeautifulSoup(resp.text, "html.parser")
                 links = soup.select("a.result__a")
 
-                for link in links[:20]:
+                for link in links[:25]:
                     href = link.get("href", "").strip()
                     if not href or href in seen:
                         continue
@@ -318,7 +332,7 @@ class AnimeSearcher:
                     )
                     if item:
                         results.append(item)
-                        if len(results) >= 10:
+                        if len(results) >= 12:
                             break
 
             except requests.exceptions.Timeout:
@@ -346,7 +360,7 @@ class AnimeSearcher:
         try:
             resp = requests.get(
                 "https://www.bing.com/search",
-                params={"q": query, "count": 20},
+                params={"q": query, "count": 25},
                 headers=headers,
                 timeout=self.engine_timeout,
             )
@@ -354,7 +368,7 @@ class AnimeSearcher:
                 return results
 
             soup = BeautifulSoup(resp.text, "html.parser")
-            for a in soup.select("li.b_algo h2 a")[:20]:
+            for a in soup.select("li.b_algo h2 a")[:25]:
                 real = self._extract_real_url(a.get("href", ""))
                 if not real or real in seen:
                     continue
@@ -403,7 +417,7 @@ class AnimeSearcher:
                 return results
 
             soup = BeautifulSoup(resp.text, "html.parser")
-            for a in soup.select("ul.results-standard li h2 a")[:20]:
+            for a in soup.select("ul.results-standard li h2 a")[:25]:
                 real = self._extract_real_url(a.get("href", ""))
                 if not real or real in seen:
                     continue
@@ -427,7 +441,7 @@ class AnimeSearcher:
 
         return results
 
-    # ============ جستجوی مستقیم در سایت‌های ایرانی ============
+    # ============ جستجوی سایت‌های ایرانی از طریق موتورهای جستجو ============
     def _search_trusted_sites(
         self,
         anime_name: str,
@@ -435,52 +449,60 @@ class AnimeSearcher:
         dubbed: bool = False,
         uncensored: bool = False,
     ) -> List[Dict]:
-        """جستجو مستقیم در سایت‌های معتبر ایرانی (با استفاده از موتورهای جستجو)"""
+        """جستجو در سایت‌های ایرانی از طریق موتورهای جستجو"""
         results: List[Dict] = []
         seen = set()
 
-        # ساخت کوئری‌های مختلف
+        # ساخت کوئری‌های مختلف برای پیدا کردن سایت‌های ایرانی
         queries = [
-            f"{anime_name} site:animefa.ir OR site:animeonline.ir OR site:animex.ir",
-            f'"{anime_name}" دانلود انیمه',
-            f"{anime_name} انیمه",
+            f'"{anime_name}" دانلود انیمه site:animefa.ir OR site:animeonline.ir OR site:animex.ir OR site:animeworld.ir OR site:anime-4u.ir',
+            f'"{anime_name}" انیمه site:animefa.ir OR site:animeonline.ir',
+            f'"{anime_name}" دوبله فارسی site:animefa.ir OR site:animeonline.ir',
+            f'"{anime_name}" لینک مستقیم site:animefa.ir',
+            f'"{anime_name}" دانلود animefa.ir',
         ]
 
         if dubbed:
-            queries.append(f"{anime_name} دوبله فارسی")
+            queries.insert(0, f'"{anime_name}" دوبله فارسی دانلود')
         if uncensored:
-            queries.append(f"{anime_name} بدون سانسور")
+            queries.insert(0, f'"{anime_name}" بدون سانسور')
 
-        for query in queries[:3]:
+        # جستجو با DuckDuckGo و Bing
+        for query in queries[:4]:
             if len(results) >= 8:
                 break
 
+            # DuckDuckGo
             try:
-                # جستجو با DuckDuckGo
                 ddg_results = self._search_duckduckgo(
                     [query], anime_name, quality, dubbed, uncensored
                 )
                 for r in ddg_results:
                     if r["url"] not in seen and r["trusted"]:
                         seen.add(r["url"])
+                        r["source"] = "سایت ایرانی"
                         results.append(r)
+                        logger.info(f"✅ پیدا شد در سایت ایرانی: {r['title'][:50]}")
                         if len(results) >= 8:
                             return results
+            except Exception as e:
+                logger.warning(f"خطا در جستجوی DDG برای {query[:30]}: {str(e)[:50]}")
 
-                # جستجو با Bing
+            # Bing
+            try:
                 bing_results = self._search_bing(
                     query, anime_name, quality, dubbed, uncensored
                 )
                 for r in bing_results:
                     if r["url"] not in seen and r["trusted"]:
                         seen.add(r["url"])
+                        r["source"] = "سایت ایرانی"
                         results.append(r)
+                        logger.info(f"✅ پیدا شد در سایت ایرانی: {r['title'][:50]}")
                         if len(results) >= 8:
                             return results
-
             except Exception as e:
-                logger.warning(f"خطا در جستجوی سایت‌های ایرانی: {str(e)[:80]}")
-                continue
+                logger.warning(f"خطا در جستجوی Bing برای {query[:30]}: {str(e)[:50]}")
 
         return results
 
@@ -518,7 +540,7 @@ class AnimeSearcher:
         all_results: List[Dict] = []
 
         # ========== اولویت با سایت‌های ایرانی ==========
-        logger.info("🇮🇷 جستجوی مستقیم در سایت‌های ایرانی...")
+        logger.info("🇮🇷 جستجوی سایت‌های ایرانی...")
         trusted_results = self._search_trusted_sites(anime_name, quality, dubbed, uncensored)
         all_results.extend(trusted_results)
         logger.info(f"🇮🇷 {len(trusted_results)} نتیجه از سایت‌های ایرانی")
@@ -582,7 +604,8 @@ class AnimeSearcher:
         final = merged[:12]
         if final:
             self._save_to_cache(cache_key, final)
-            logger.info(f"✅ {len(final)} نتیجه نهایی (از این تعداد {len([r for r in final if r['trusted']])} مورد از سایت‌های ایرانی)")
+            trusted_count = len([r for r in final if r.get("trusted", False)])
+            logger.info(f"✅ {len(final)} نتیجه نهایی ({trusted_count} مورد از سایت‌های ایرانی)")
 
         return final
 
@@ -646,7 +669,7 @@ class AnimeBot:
         welcome_text = (
             "🎬 **به ربات جستجوگر انیمه خوش آمدید!**\n\n"
             "✨ **قابلیت‌ها:**\n"
-            "• جستجو در سایت‌های معتبر ایرانی\n"
+            "• جستجو در سایت‌های معتبر ایرانی ⭐\n"
             "• جستجو در DuckDuckGo و Bing\n"
             "• لینک دانلود مستقیم\n"
             "• کیفیت‌های مختلف\n"
@@ -654,7 +677,8 @@ class AnimeBot:
             "• فیلتر بدون سانسور\n"
             "• جستجوی ژانر\n"
             "• اصلاح املایی هوشمند\n\n"
-            "📝 **اسم انیمه رو تایپ کن یا از دکمه‌ها استفاده کن!**"
+            "📝 **اسم انیمه رو تایپ کن یا از دکمه‌ها استفاده کن!**\n"
+            "⭐ = سایت ایرانی"
         )
 
         await update.message.reply_text(
@@ -763,7 +787,7 @@ class AnimeBot:
             censored_text = (
                 "🔞 بدون سانسور" if result["uncensored"] else "✅ سانسور شده"
             )
-            trusted_icon = "⭐" if result.get("trusted", False) else ""
+            trusted_icon = "⭐ " if result.get("trusted", False) else ""
             source_text = f"📌 منبع: {result.get('source', 'ناشناس')}"
 
             result_text += f"{i}. {quality_icon} **{result['title']}** {trusted_icon}\n"
@@ -1003,6 +1027,7 @@ class AnimeBot:
             "• انتخاب ژانر مثل اکشن، کمدی، درام و...\n\n"
             "🏆 محبوب‌ترین‌ها:\n"
             "• نمایش لیست انیمه‌های معروف برای شروع\n\n"
+            "⭐ سایت‌های ایرانی با ستاره مشخص شدن\n\n"
             "اگر نتیجه‌ای پیدا نشد، اسم رو ساده‌تر یا انگلیسی‌تر وارد کن."
         )
 
