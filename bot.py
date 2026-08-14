@@ -31,7 +31,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # ============ تنظیمات ============
 TOKEN = "8876632730:AAEplhdqqb24CPLWe6BzF0QIvMuwboQpLNI"
 
-# ============ لیست پروکسی‌های ایران (از ProxyScrape) ============
+# ============ لیست پروکسی‌های ایران ============
 IRANIAN_PROXIES = [
     {"http": "http://5.160.247.48:8443", "https": "http://5.160.247.48:8443"},
     {"http": "http://46.34.165.86:443", "https": "http://46.34.165.86:443"},
@@ -52,7 +52,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ============ کلاس جستجوگر بازطراحی شده ============
+# ============ کلاس جستجوگر ============
 class AnimeSearcher:
     def __init__(self):
         self.genres = {
@@ -82,7 +82,6 @@ class AnimeSearcher:
             "berserk", "evangelion",
         ]
 
-        # سایت‌های معتبر ایرانی با سلکتورهای به‌روز
         self.trusted_sites = [
             "animefa.ir", "animeonline.ir", "animex.ir",
             "animeworld.ir", "anime-4u.ir", "animekhor.ir",
@@ -90,7 +89,6 @@ class AnimeSearcher:
             "animedl.ir", "animecity.ir"
         ]
 
-        # سایت‌های ایرانی با سلکتورهای متعدد
         self.anime_sites = [
             {
                 "name": "AnimeFa",
@@ -123,7 +121,6 @@ class AnimeSearcher:
             },
         ]
 
-        # Cache
         self.search_cache: Dict[str, tuple] = {}
         self.cache_timeout = 600
 
@@ -138,7 +135,6 @@ class AnimeSearcher:
         self.timeout = 15
         self.overall_timeout = 35
 
-    # ============ هدرها ============
     def _headers(self, fa: bool = False) -> Dict[str, str]:
         headers = {
             "User-Agent": random.choice(self.user_agents),
@@ -147,10 +143,6 @@ class AnimeSearcher:
             "Connection": "keep-alive",
             "Upgrade-Insecure-Requests": "1",
             "Cache-Control": "max-age=0",
-            "Sec-Fetch-Dest": "document",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "none",
-            "Sec-Fetch-User": "?1",
         }
         if fa:
             headers["Accept-Language"] = "fa-IR,fa;q=0.9,en-US;q=0.8,en;q=0.7"
@@ -158,7 +150,6 @@ class AnimeSearcher:
             headers["Accept-Language"] = "en-US,en;q=0.9,fa;q=0.8"
         return headers
 
-    # ============ اصلاح املا ============
     def correct_spelling(self, name: str) -> str:
         from difflib import get_close_matches
         name = name.lower().strip()
@@ -167,7 +158,6 @@ class AnimeSearcher:
         matches = get_close_matches(name, self.popular_anime, n=1, cutoff=0.6)
         return matches[0] if matches else name
 
-    # ============ کش ============
     def _get_cache_key(self, anime_name: str, quality: str = None, dubbed: bool = False, uncensored: bool = False) -> str:
         return f"{anime_name}_{quality}_{dubbed}_{uncensored}"
 
@@ -182,7 +172,6 @@ class AnimeSearcher:
     def _save_to_cache(self, key: str, data: List[Dict]):
         self.search_cache[key] = (data, time.time())
 
-    # ============ استخراج URL واقعی ============
     def _extract_real_url(self, url: str) -> Optional[str]:
         if not url:
             return None
@@ -220,12 +209,10 @@ class AnimeSearcher:
 
         return url
 
-    # ============ تشخیص سایت ایرانی ============
     def _is_iranian_site(self, url: str) -> bool:
         url_lower = url.lower()
         return any(domain in url_lower for domain in self.trusted_sites)
 
-    # ============ ساخت نتیجه ============
     def _make_result(self, url: str, title: str, anime_name: str, quality: str = None,
                      dubbed: bool = False, uncensored: bool = False, source: str = "search") -> Optional[Dict]:
         url = url.strip()
@@ -249,25 +236,21 @@ class AnimeSearcher:
             "trusted": is_trusted,
         }
 
-    # ============ جستجو با DuckDuckGo (اصلاح شده) ============
     def _search_duckduckgo(self, query: str, anime_name: str, quality: str = None,
                            dubbed: bool = False, uncensored: bool = False) -> List[Dict]:
-        """جستجو با DuckDuckGo - پارامترها به درستی ارسال میشن"""
         results: List[Dict] = []
         seen = set()
         headers = self._headers(fa=True)
 
         try:
-            # ✅ پارامترها به درستی به عنوان params ارسال میشن
             resp = requests.get(
                 "https://html.duckduckgo.com/html/",
-                params={"q": query, "kl": "fa-ir", "kp": "-1"},
+                params={"q": query},
                 headers=headers,
                 timeout=self.timeout
             )
 
             if resp.status_code != 200:
-                logger.warning(f"⚠️ DuckDuckGo status: {resp.status_code}")
                 return results
 
             soup = BeautifulSoup(resp.text, "html.parser")
@@ -297,32 +280,26 @@ class AnimeSearcher:
                     if len(results) >= 12:
                         break
 
-        except requests.exceptions.Timeout:
-            logger.warning(f"⏰ Timeout DuckDuckGo: {query[:40]}")
         except Exception as e:
             logger.warning(f"خطا در DuckDuckGo: {str(e)[:80]}")
 
         return results
 
-    # ============ جستجو با Bing (اصلاح شده) ============
     def _search_bing(self, query: str, anime_name: str, quality: str = None,
                      dubbed: bool = False, uncensored: bool = False) -> List[Dict]:
-        """جستجو با Bing - پارامترها به درستی ارسال میشن"""
         results: List[Dict] = []
         seen = set()
         headers = self._headers()
 
         try:
-            # ✅ پارامترها به درستی به عنوان params ارسال میشن
             resp = requests.get(
                 "https://www.bing.com/search",
-                params={"q": query, "count": 25, "setlang": "fa", "cc": "IR"},
+                params={"q": query, "count": 25},
                 headers=headers,
                 timeout=self.timeout,
             )
 
             if resp.status_code != 200:
-                logger.warning(f"⚠️ Bing status: {resp.status_code}")
                 return results
 
             soup = BeautifulSoup(resp.text, "html.parser")
@@ -343,22 +320,17 @@ class AnimeSearcher:
                 if item:
                     results.append(item)
 
-        except requests.exceptions.Timeout:
-            logger.warning(f"⏰ Timeout Bing: {query[:40]}")
         except Exception as e:
             logger.warning(f"خطا در Bing: {str(e)[:80]}")
 
         return results
 
-    # ============ جستجو مستقیم در سایت‌های ایرانی (بازطراحی شده) ============
     def _search_iranian_sites_direct(self, anime_name: str, quality: str = None,
                                      dubbed: bool = False, uncensored: bool = False) -> List[Dict]:
-        """جستجوی مستقیم در سایت‌های ایرانی با سلکتورهای به‌روز"""
         results: List[Dict] = []
         seen = set()
         headers = self._headers(fa=True)
 
-        # ساخت کوئری‌های مختلف برای جستجو
         search_terms = [
             anime_name,
             anime_name.replace(" ", "-"),
@@ -366,13 +338,11 @@ class AnimeSearcher:
             anime_name.replace(" ", ""),
         ]
 
-        # لیست سلکتورهای اضافی برای پیدا کردن لینک‌ها
         extra_selectors = [
             ".post-title a", "h2.entry-title a", "a.post-link",
             "h2 a", ".entry-title a", "a[rel='bookmark']",
             ".blog-item a", "h3 a", ".item-title a",
             "a[href*='download']", "a[href*='دانلود']",
-            "a[href*='anime']", "a[href*='series']",
         ]
 
         for site in self.anime_sites:
@@ -384,7 +354,6 @@ class AnimeSearcher:
                     search_url = site["search_url"].format(quote_plus(term))
                     logger.info(f"🔍 جستجوی مستقیم در {site['name']}: {search_url}")
 
-                    # تلاش با پروکسی
                     resp = None
                     for proxy in IRANIAN_PROXIES[:5]:
                         try:
@@ -397,14 +366,11 @@ class AnimeSearcher:
                                 allow_redirects=True
                             )
                             if resp and resp.status_code == 200:
-                                logger.info(f"✅ پروکسی {proxy['http']} کار کرد")
                                 break
                         except Exception:
                             continue
 
-                    # اگر پروکسی جواب نداد، درخواست مستقیم
                     if not resp or resp.status_code != 200:
-                        logger.info("🔄 تلاش بدون پروکسی...")
                         resp = requests.get(
                             search_url,
                             headers=headers,
@@ -414,16 +380,13 @@ class AnimeSearcher:
                         )
 
                     if not resp or resp.status_code != 200:
-                        logger.warning(f"⚠️ {site['name']} status: {resp.status_code if resp else 'No response'}")
                         continue
 
                     soup = BeautifulSoup(resp.text, "html.parser")
 
-                    # حذف المان‌های غیرضروری
                     for tag in soup(["script", "style", "nav", "footer", "header"]):
                         tag.decompose()
 
-                    # پیدا کردن لینک‌ها با سلکتورهای مختلف
                     found_links = []
                     all_selectors = site.get("selectors", []) + extra_selectors
 
@@ -436,9 +399,6 @@ class AnimeSearcher:
                     if not found_links:
                         found_links = soup.find_all("a", href=True)
 
-                    logger.info(f"🔗 {site['name']}: {len(found_links)} لینک پیدا شد")
-
-                    # کلمات کلیدی فارسی برای تشخیص انیمه
                     persian_keywords = ["انیمه", "دانلود", "دوبله", "زیرنویس", "فارسی", "جدید", "قسمت", "سریال"]
 
                     for link in found_links[:60]:
@@ -448,7 +408,6 @@ class AnimeSearcher:
                         if not href:
                             continue
 
-                        # تبدیل لینک نسبی به مطلق
                         if href.startswith("/"):
                             href = site["url"] + href
                         elif href.startswith("?") or href.startswith("#"):
@@ -459,14 +418,12 @@ class AnimeSearcher:
                         if not href_lower.startswith("http"):
                             continue
 
-                        # فیلتر لینک‌های بی‌ربط
                         bad_patterns = [
                             "wa.me", "mailto:", "javascript:", "tel:",
                             "/wp-", "/category", "/tag", "/author",
                             "/feed", "/page/", "/cdn-cgi/", "/wp-content",
                             "?lang=", "&lang=", "/login", "/register",
-                            "/cart", "/checkout", "/profile", "/cdn-cgi/",
-                            "/comment", "/reply", "/embed", "/trackback"
+                            "/cart", "/checkout", "/profile",
                         ]
                         if any(p in href_lower for p in bad_patterns):
                             continue
@@ -474,26 +431,11 @@ class AnimeSearcher:
                         if href_lower.rstrip("/") == site["url"].lower().rstrip("/"):
                             continue
 
-                        # بررسی ارتباط با انیمه (با پشتیبانی از فارسی)
                         title_lower = title.lower()
                         anime_lower = anime_name.lower()
 
-                        # بررسی عنوان فارسی
-                        has_persian_anime = (
-                            "ناروتو" in title or "وان پیس" in title or "بلیچ" in title or
-                            "حمله به تایتان" in title or "شیطان کش" in title or
-                            "جوجوتسو" in title or "مای هیرو" in title or
-                            "دث نوت" in title or "فولمتال" in title or
-                            "دراگون بال" in title or "پوکمون" in title or
-                            "هانتر" in title or "وان پانچ" in title or
-                            "توکیو" in title or "سورد آرت" in title or
-                            "فairy تیل" in title or "گینتاما" in title or
-                            "جوجو" in title or "اسپای" in title or
-                            "چینساو" in title or "وینلند" in title or
-                            "برسک" in title or "انجلیون" in title
-                        )
+                        has_persian_anime = any(name in title for name in ["ناروتو", "وان پیس", "بلیچ", "تایتان", "شیطان کش", "جوجوتسو", "مای هیرو", "دث نوت", "فولمتال", "دراگون بال", "پوکمون", "هانتر", "وان پانچ", "توکیو", "سورد آرت"])
 
-                        # بررسی ارتباط با انیمه
                         is_related = (
                             anime_lower in title_lower or
                             anime_lower in href_lower or
@@ -533,14 +475,11 @@ class AnimeSearcher:
 
         return results
 
-    # ============ جستجوی سایت‌های ایرانی با موتورهای جستجو ============
     def _search_iranian_sites_via_search_engines(self, anime_name: str, quality: str = None,
                                                   dubbed: bool = False, uncensored: bool = False) -> List[Dict]:
-        """جستجوی سایت‌های ایرانی از طریق موتورهای جستجو"""
         results: List[Dict] = []
         seen = set()
 
-        # ساخت کوئری‌های مختلف
         queries = [
             f'"{anime_name}" دانلود انیمه',
             f'"{anime_name}" انیمه',
@@ -559,7 +498,6 @@ class AnimeSearcher:
             if len(results) >= 8:
                 break
 
-            # جستجو با DuckDuckGo
             try:
                 ddg_results = self._search_duckduckgo(query, anime_name, quality, dubbed, uncensored)
                 for r in ddg_results:
@@ -568,13 +506,11 @@ class AnimeSearcher:
                         r["trusted"] = True
                         r["source"] = "سایت ایرانی"
                         results.append(r)
-                        logger.info(f"✅ پیدا شد در سایت ایرانی (DDG): {r['title'][:50]}")
                         if len(results) >= 8:
                             return results
-            except Exception as e:
-                logger.warning(f"خطا در جستجوی DDG: {str(e)[:50]}")
+            except Exception:
+                pass
 
-            # جستجو با Bing
             try:
                 bing_results = self._search_bing(query, anime_name, quality, dubbed, uncensored)
                 for r in bing_results:
@@ -583,18 +519,15 @@ class AnimeSearcher:
                         r["trusted"] = True
                         r["source"] = "سایت ایرانی"
                         results.append(r)
-                        logger.info(f"✅ پیدا شد در سایت ایرانی (Bing): {r['title'][:50]}")
                         if len(results) >= 8:
                             return results
-            except Exception as e:
-                logger.warning(f"خطا در جستجوی Bing: {str(e)[:50]}")
+            except Exception:
+                pass
 
         return results
 
-    # ============ جستجوی اصلی ============
     def search_google(self, anime_name: str, quality: str = None,
                       dubbed: bool = False, uncensored: bool = False) -> List[Dict]:
-        """جستجوی هم‌زمان در چند منبع"""
         cache_key = self._get_cache_key(anime_name, quality, dubbed, uncensored)
         cached_result = self._get_from_cache(cache_key)
         if cached_result:
@@ -602,7 +535,6 @@ class AnimeSearcher:
 
         logger.info(f"🔍 جستجوی هم‌زمان برای: {anime_name}")
 
-        # ساخت کوئری‌ها
         persian_query = f'"{anime_name}" انیمه دانلود لینک مستقیم'
         if quality:
             persian_query += f" {quality}"
@@ -617,13 +549,11 @@ class AnimeSearcher:
 
         all_results: List[Dict] = []
 
-        # ========== مرحله 1: جستجوی مستقیم در سایت‌های ایرانی ==========
         logger.info("🇮🇷 مرحله 1: جستجوی مستقیم در سایت‌های ایرانی...")
         direct_results = self._search_iranian_sites_direct(anime_name, quality, dubbed, uncensored)
         all_results.extend(direct_results)
         logger.info(f"🇮🇷 {len(direct_results)} نتیجه از سایت‌های ایرانی (مستقیم)")
 
-        # ========== مرحله 2: جستجوی سایت‌های ایرانی با موتورهای جستجو ==========
         if len(all_results) < 3:
             logger.info("🌐 مرحله 2: جستجوی سایت‌های ایرانی با موتورهای جستجو...")
             engine_results = self._search_iranian_sites_via_search_engines(
@@ -632,7 +562,6 @@ class AnimeSearcher:
             all_results.extend(engine_results)
             logger.info(f"🌐 {len(engine_results)} نتیجه از موتورهای جستجو")
 
-        # ========== مرحله 3: جستجوی عمومی ==========
         if len(all_results) < 3:
             logger.info("🌍 مرحله 3: جستجوی عمومی...")
             executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="search")
@@ -665,7 +594,6 @@ class AnimeSearcher:
             finally:
                 executor.shutdown(wait=False)
 
-        # حذف URLهای تکراری
         merged: List[Dict] = []
         seen = set()
         for r in all_results:
@@ -675,7 +603,6 @@ class AnimeSearcher:
             seen.add(u)
             merged.append(r)
 
-        # مرتب‌سازی: اول سایت‌های معتبر، بعد کیفیت بالاتر
         quality_order = {"4K": 0, "1080p": 1, "720p": 2, "480p": 3, "متغیر": 4}
         merged.sort(key=lambda x: (not x.get("trusted", False), quality_order.get(x["quality"], 5)))
 
@@ -687,7 +614,6 @@ class AnimeSearcher:
 
         return final
 
-    # ============ متدهای کمکی ============
     def extract_title(self, url: str, default_name: str) -> str:
         try:
             url_parts = url.split("/")
@@ -780,7 +706,6 @@ class AnimeBot:
             return
 
         self.user_search_lock[user_id] = True
-        logger.info(f"🔒 کاربر {user_id} قفل شد")
 
         try:
             msg = await update.message.reply_text(
@@ -830,14 +755,12 @@ class AnimeBot:
             )
         finally:
             self.user_search_lock[user_id] = False
-            logger.info(f"🔓 کاربر {user_id} آزاد شد")
 
     async def show_results(self, msg, anime_name: str, results: List[Dict], user_id: int):
         if user_id not in self.user_data:
             self.user_data[user_id] = {}
         self.user_data[user_id]["results"] = results
 
-        # اولویت با سایت‌های ایرانی
         trusted_results = [r for r in results if r.get("trusted", False)]
         other_results = [r for r in results if not r.get("trusted", False)]
         display_results = (trusted_results + other_results)[:5]
@@ -876,7 +799,7 @@ class AnimeBot:
             disable_web_page_preview=True,
         )
 
-    # ============ بقیه متدها ============
+    # ============ بقیه متدهای ربات ============
     async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
         user_id = update.effective_user.id
@@ -1178,7 +1101,7 @@ def run_health_server():
     server.serve_forever()
 
 
-# ============ تابع اصلی اجرای ربات ============
+# ============ تابع اصلی اجرای ربات (سازگار با Python 3.14) ============
 async def run_bot():
     bot = AnimeBot()
     
@@ -1200,12 +1123,25 @@ async def run_bot():
     # حذف Webhook قبل از شروع
     await application.bot.delete_webhook(drop_pending_updates=True)
     
-    # شروع با run_polling استاندارد
-    await application.run_polling(
+    # استفاده از start_polling به جای run_polling
+    await application.initialize()
+    await application.start()
+    await application.updater.start_polling(
         drop_pending_updates=True,
         allowed_updates=["message", "callback_query"],
         poll_interval=0.5,
     )
+    
+    # نگه داشتن ربات در حالت اجرا
+    try:
+        while True:
+            await asyncio.sleep(1)
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("🛑 در حال توقف ربات...")
+    finally:
+        await application.updater.stop()
+        await application.stop()
+        await application.shutdown()
 
 
 # ============ تابع اصلی ============
