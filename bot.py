@@ -115,6 +115,7 @@ class AnimeSearcher:
             "animecity.ir",
             "animeonline.ir",
             "animex.ir",
+            "aparat.com",  # اضافه شدن اپارات
         ]
 
         # سایت‌های ایرانی با ساختار مشخص
@@ -136,6 +137,13 @@ class AnimeSearcher:
                 "url": "https://animex.ir",
                 "search_url": "https://animex.ir/?s={}",
                 "selectors": ["article h2 a", ".post-title a", "h2.entry-title a", "a.post-link", "h2 a"],
+            },
+            {
+                "name": "Aparat",
+                "url": "https://www.aparat.com",
+                "search_url": "https://www.aparat.com/result/{}",
+                "selectors": ["a.video-thumb", "a.video-title", "div.video-box a", "a.thumbnail"],
+                "is_aparat": True,
             },
         ]
 
@@ -316,10 +324,14 @@ class AnimeSearcher:
             "animefa.ir", "animeonline.ir", "animex.ir", 
             "animeworld.ir", "anime-4u.ir", "animekhor.ir",
             "animelab.ir", "animeshow.ir", "iran-anime.ir",
-            "animedl.ir", "animecity.ir"
+            "animedl.ir", "animecity.ir", "aparat.com",
         ]
         url_lower = url.lower()
         return any(domain in url_lower for domain in iranian_domains)
+
+    def _is_aparat_link(self, url: str) -> bool:
+        """بررسی اینکه آیا لینک متعلق به اپارات است"""
+        return "aparat.com" in url.lower()
 
     def _make_result(self, url: str, title: str, anime_name: str, quality: str = None,
                      dubbed: bool = False, uncensored: bool = False, source: str = "search") -> Optional[Dict]:
@@ -341,6 +353,120 @@ class AnimeSearcher:
             "trusted": is_trusted,
         }
 
+    # ============ جستجوی اپارات ============
+    def _search_aparat(
+        self,
+        anime_name: str,
+        quality: str = None,
+        dubbed: bool = False,
+        uncensored: bool = False,
+    ) -> List[Dict]:
+        """جستجوی انیمه در اپارات"""
+        results: List[Dict] = []
+        seen = set()
+        headers = self._headers(fa=True)
+
+        try:
+            # ساخت کوئری جستجو در اپارات
+            search_url = f"https://www.aparat.com/result/{quote_plus(anime_name)}"
+            logger.info(f"🔍 جستجو در اپارات: {search_url}")
+
+            resp = self._get_with_proxy(search_url, headers, timeout=15)
+
+            if not resp or resp.status_code != 200:
+                logger.warning(f"⚠️ اپارات status: {resp.status_code if resp else 'No response'}")
+                return results
+
+            soup = BeautifulSoup(resp.text, "html.parser")
+
+            # پیدا کردن ویدیوها در اپارات
+            video_selectors = [
+                "a.video-thumb",
+                "a.video-title",
+                "div.video-box a",
+                "a.thumbnail",
+                "div.thumb a",
+                "a[href*='/v/']",
+            ]
+
+            found_links = []
+            for selector in video_selectors:
+                links = soup.select(selector)
+                if links:
+                    found_links.extend(links)
+                    break
+
+            if not found_links:
+                # اگر با سلکتورها پیدا نشد، همه لینک‌ها رو بررسی کن
+                all_links = soup.find_all("a", href=True)
+                for link in all_links:
+                    href = link.get("href", "")
+                    if "/v/" in href or "/video/" in href:
+                        found_links.append(link)
+
+            logger.info(f"🔗 اپارات: {len(found_links)} ویدیو پیدا شد")
+
+            for link in found_links[:30]:
+                href = link.get("href", "").strip()
+                title = link.get_text(strip=True)
+
+                if not href:
+                    continue
+
+                # تبدیل لینک نسبی به مطلق
+                if href.startswith("/"):
+                    href = "https://www.aparat.com" + href
+                elif not href.startswith("http"):
+                    continue
+
+                # فقط لینک‌های اپارات
+                if "aparat.com" not in href.lower():
+                    continue
+
+                # فیلتر لینک‌های بی‌ربط
+                if any(p in href.lower() for p in ["/login", "/register", "/profile", "/settings", "/about"]):
+                    continue
+
+                # اگر عنوان خالی بود، از لینک استفاده کن
+                if not title:
+                    title = href.split("/")[-1].replace("-", " ").title()
+
+                # بررسی ارتباط با انیمه
+                title_lower = title.lower()
+                anime_lower = anime_name.lower()
+
+                is_related = (
+                    anime_lower in title_lower or
+                    any(word in title_lower for word in anime_lower.split()) or
+                    "انیمه" in title or "anime" in title_lower
+                )
+
+                if not is_related and len(title) < 4:
+                    continue
+
+                item = self._make_result(
+                    href,
+                    title,
+                    anime_name,
+                    quality,
+                    dubbed,
+                    uncensored,
+                    "آپارات",
+                )
+
+                if item and item["url"] not in seen:
+                    seen.add(item["url"])
+                    item["trusted"] = True
+                    results.append(item)
+                    logger.info(f"✅ پیدا شد در آپارات: {title[:50]}")
+                    if len(results) >= 5:
+                        return results
+
+        except Exception as e:
+            logger.warning(f"خطا در جستجوی اپارات: {str(e)[:100]}")
+
+        return results
+
     # ============ جستجوی مستقیم در سایت‌های ایرانی با پروکسی ============
     def _search_iranian_sites_direct(
         self,
@@ -361,7 +487,18 @@ class AnimeSearcher:
             anime_name.replace(" ", "_"),
         ]
 
+        # ========== اولویت: جستجو در اپارات ==========
+        logger.info("📺 جستجوی انیمه در آپارات...")
+        aparat_results = self._search_aparat(anime_name, quality, dubbed, uncensored)
+        results.extend(aparat_results)
+        logger.info(f"📺 {len(aparat_results)} نتیجه از آپارات")
+
+        # ========== جستجو در سایر سایت‌های ایرانی ==========
         for site in self.anime_sites:
+            # اگر سایت اپارات است، قبلاً جستجو کردیم
+            if site.get("is_aparat", False):
+                continue
+
             for term in search_terms[:4]:
                 if len(results) >= 8:
                     return results
@@ -651,11 +788,13 @@ class AnimeSearcher:
         if uncensored:
             persian_query += " بدون سانسور"
 
-        # چند کوئری مکمل برای سایت‌های ایرانی؛ موتور جستجو ممکن است عبارت فارسی/انگلیسی را متفاوت ایندکس کرده باشد.
+        # چند کوئری مکمل برای سایت‌های ایرانی
         iran_queries = [
             persian_query,
             f"{anime_name} دانلود انیمه",
             f"{anime_name} site:ir انیمه",
+            f"{anime_name} آپارات",  # اضافه شدن کوئری اپارات
+            f"انیمه {anime_name} آپارات",
         ]
         english_query = f"{anime_name} anime download"
         if dubbed:
@@ -794,6 +933,7 @@ class AnimeBot:
             "🎬 **به ربات جستجوگر انیمه خوش آمدید!**\n\n"
             "✨ **قابلیت‌ها:**\n"
             "• جستجو در سایت‌های معتبر ایرانی ⭐\n"
+            "• جستجو در آپارات 📺\n"
             "• جستجو در DuckDuckGo و Bing\n"
             "• لینک دانلود مستقیم\n"
             "• کیفیت‌های مختلف\n"
@@ -802,7 +942,7 @@ class AnimeBot:
             "• جستجوی ژانر\n"
             "• اصلاح املایی هوشمند\n\n"
             "📝 **اسم انیمه رو تایپ کن یا از دکمه‌ها استفاده کن!**\n"
-            "⭐ = سایت ایرانی"
+            "⭐ = سایت ایرانی | 📺 = آپارات"
         )
 
         await update.message.reply_text(
@@ -902,17 +1042,21 @@ class AnimeBot:
             quality_icons = {"1080p": "📺", "720p": "💻", "480p": "📱", "4K": "🖥️", "متغیر": "📹"}
             quality_icon = quality_icons.get(result["quality"], "📹")
 
+            # تشخیص آپارات
+            is_aparat = "aparat.com" in result["url"].lower()
+            source_icon = "📺 " if is_aparat else ""
+
             dub_text = "🎙️ دوبله فارسی" if result["dubbed"] else "📝 زیرنویس"
             censored_text = "🔞 بدون سانسور" if result["uncensored"] else "✅ سانسور شده"
-            trusted_icon = "⭐ " if result.get("trusted", False) else ""
+            trusted_icon = "⭐ " if result.get("trusted", False) and not is_aparat else ""
             source_text = f"📌 منبع: {result.get('source', 'ناشناس')}"
 
-            result_text += f"{i}. {quality_icon} **{result['title']}** {trusted_icon}\n"
+            result_text += f"{i}. {quality_icon} **{result['title']}** {trusted_icon}{source_icon}\n"
             result_text += f"   📥 کیفیت: {result['quality']}\n"
             result_text += f"   {dub_text}\n"
             result_text += f"   {censored_text}\n"
             result_text += f"   {source_text}\n"
-            result_text += f"   🔗 [لینک دانلود]({result['url']})\n\n"
+            result_text += f"   🔗 [لینک دانلود/مشاهده]({result['url']})\n\n"
 
         keyboard = []
         for i in range(min(5, len(display_results))):
@@ -1108,7 +1252,8 @@ class AnimeBot:
             "🎯 جستجوی پیشرفته:\n• فیلتر دوبله فارسی\n• فیلتر کیفیت 1080p و 720p\n• فیلتر بدون سانسور\n\n"
             "📂 جستجوی ژانر:\n• انتخاب ژانر مثل اکشن، کمدی، درام و...\n\n"
             "🏆 محبوب‌ترین‌ها:\n• نمایش لیست انیمه‌های معروف برای شروع\n\n"
-            "⭐ سایت‌های ایرانی با ستاره مشخص شدن\n\n"
+            "⭐ سایت‌های ایرانی با ستاره مشخص شدن\n"
+            "📺 لینک‌های آپارات با آیکون تلویزیون مشخص شدن\n\n"
             "اگر نتیجه‌ای پیدا نشد، اسم رو ساده‌تر یا انگلیسی‌تر وارد کن."
         )
 
@@ -1183,14 +1328,20 @@ class AnimeBot:
             return
 
         result = results[index]
+        
+        # تشخیص آپارات
+        is_aparat = "aparat.com" in result["url"].lower()
+        link_text = "🔗 لینک مشاهده" if is_aparat else "🔗 لینک دانلود"
+        
         text = (
-            f"📥 **دانلود انیمه انتخاب‌شده**\n\n"
+            f"📥 **انیمه انتخاب‌شده**\n\n"
             f"🎬 عنوان: {result['title']}\n"
             f"📺 کیفیت: {result['quality']}\n"
             f"🎙️ {'دوبله فارسی' if result['dubbed'] else 'زیرنویس'}\n"
             f"🚫 {'بدون سانسور' if result['uncensored'] else 'سانسور شده'}\n"
-            f"📌 منبع: {result.get('source', 'ناشناس')}\n\n"
-            f"🔗 لینک دانلود:\n{result['url']}\n\n"
+            f"📌 منبع: {result.get('source', 'ناشناس')}\n"
+            f"{'📺 این لینک از آپارات است' if is_aparat else ''}\n\n"
+            f"{link_text}:\n{result['url']}\n\n"
             "اگر لینک باز نشد، آن را در مرورگر باز کن."
         )
 
