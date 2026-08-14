@@ -29,9 +29,7 @@ from urllib.parse import quote_plus, urlparse, parse_qs
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ============ تنظیمات ============
-TOKEN = os.getenv("8876632730:AAEplhdqqb24CPLWe6BzF0QIvMuwboQpLNI")
-if not TOKEN:
-    raise RuntimeError("BOT_TOKEN environment variable is not set")
+TOKEN = "8876632730:AAEplhdqqb24CPLWe6BzF0QIvMuwboQpLNI"
 
 # ============ لیست پروکسی‌های ایران ============
 IRANIAN_PROXIES = [
