@@ -621,10 +621,10 @@ class AnimeBot:
             )
 
         keyboard.append(
-            [InlineKeyboardButton("🔄 جستجوی جدید", callback_data="new_search")]
+            [InlineKeyboardButton("🔄 جستجوی جدید", callback_data="new_search")],
         )
         keyboard.append(
-            [InlineKeyboardButton("🏠 منوی اصلی", callback_data="main_menu")]
+            [InlineKeyboardButton("🏠 منوی اصلی", callback_data="main_menu")],
         )
 
         await msg.edit_text(
@@ -899,7 +899,7 @@ class AnimeBot:
         )
 
 
-# ============ سرور سلامت ============
+# ============ سرور سلامت (بهبود یافته) ============
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/":
@@ -907,6 +907,16 @@ class HealthHandler(BaseHTTPRequestHandler):
             self.send_header("Content-type", "text/plain; charset=utf-8")
             self.end_headers()
             self.wfile.write(b"OK")
+        else:
+            self.send_response(404)
+            self.end_headers()
+    
+    # ✅ اضافه کردن پشتیبانی از متد HEAD برای رفع خطای 501
+    def do_HEAD(self):
+        if self.path == "/":
+            self.send_response(200)
+            self.send_header("Content-type", "text/plain; charset=utf-8")
+            self.end_headers()
         else:
             self.send_response(404)
             self.end_headers()
@@ -919,7 +929,7 @@ def run_health_server():
     server.serve_forever()
 
 
-# ============ تابع اصلی اجرای ربات (اصلاح شده) ============
+# ============ تابع اصلی اجرای ربات ============
 async def run_bot():
     bot = AnimeBot()
     application = (
@@ -937,14 +947,13 @@ async def run_bot():
 
     logger.info("🤖 ربات انیمه راه‌اندازی شد!")
     
-    # ✅ اصلاح: استفاده از run_polling با مدیریت صحیح
+    # ✅ استفاده از run_polling با مدیریت صحیح
     await application.initialize()
     await application.start()
     await application.updater.start_polling()
     
     # نگه داشتن ربات در حالت اجرا
     try:
-        # منتظر ماندن تا زمانی که ربات متوقف شود
         while True:
             await asyncio.sleep(1)
     except (KeyboardInterrupt, SystemExit):
@@ -955,7 +964,7 @@ async def run_bot():
         await application.shutdown()
 
 
-# ============ تابع اصلی (اصلاح شده) ============
+# ============ تابع اصلی ============
 def main():
     # راه‌اندازی سرور سلامت در ترد جداگانه
     health_thread = threading.Thread(target=run_health_server, daemon=True)
