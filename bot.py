@@ -1191,9 +1191,10 @@ def run_health_server():
     server.serve_forever()
 
 
-# ============ تابع اصلی اجرای ربات ============
+# ============ تابع اصلی اجرای ربات (اصلاح شده برای رفع Conflict) ============
 async def run_bot():
     bot = AnimeBot()
+    
     application = (
         Application.builder()
         .token(TOKEN)
@@ -1209,19 +1210,61 @@ async def run_bot():
 
     logger.info("🤖 ربات انیمه راه‌اندازی شد!")
 
-    await application.initialize()
-    await application.start()
-    await application.updater.start_polling()
-
+    # ========== راه‌اندازی با حذف Webhook برای جلوگیری از Conflict ==========
     try:
+        # حذف Webhook قبلی با drop_pending_updates=True
+        await application.bot.delete_webhook(drop_pending_updates=True)
+        logger.info("✅ Webhook پاک شد")
+        
+        # کمی صبر کن تا مطمئن بشی
+        await asyncio.sleep(2)
+        
+        # راه‌اندازی Application
+        await application.initialize()
+        await application.start()
+        
+        # شروع Polling با تنظیمات ضد Conflict
+        await application.updater.start_polling(
+            drop_pending_updates=True,
+            allowed_updates=["message", "callback_query"],
+            poll_interval=0.5,
+        )
+        
+        logger.info("✅ ربات با موفقیت راه‌اندازی شد!")
+        
+        # منتظر ماندن
         while True:
             await asyncio.sleep(1)
-    except (KeyboardInterrupt, SystemExit):
+            
+    except asyncio.CancelledError:
         logger.info("🛑 در حال توقف ربات...")
+    except telegram.error.Conflict as e:
+        logger.error(f"❌ خطای Conflict: {e}")
+        logger.info("🔄 در حال تلاش مجدد بعد از 5 ثانیه...")
+        await asyncio.sleep(5)
+        # تلاش مجدد
+        try:
+            await application.bot.delete_webhook(drop_pending_updates=True)
+            await asyncio.sleep(2)
+            await application.updater.start_polling(
+                drop_pending_updates=True,
+                allowed_updates=["message", "callback_query"],
+                poll_interval=0.5,
+            )
+            while True:
+                await asyncio.sleep(1)
+        except Exception as retry_error:
+            logger.error(f"❌ تلاش مجدد ناموفق: {retry_error}")
+    except Exception as e:
+        logger.error(f"❌ خطا در اجرای ربات: {e}")
     finally:
-        await application.updater.stop()
-        await application.stop()
-        await application.shutdown()
+        try:
+            await application.updater.stop()
+            await application.stop()
+            await application.shutdown()
+        except:
+            pass
+        logger.info("🛑 ربات متوقف شد.")
 
 
 # ============ تابع اصلی ============
