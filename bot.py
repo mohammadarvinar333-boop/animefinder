@@ -26,6 +26,14 @@ from telegram.ext import (
 from bs4 import BeautifulSoup
 from urllib.parse import quote_plus, urlparse, parse_qs
 
+# ============ اضافه کردن cloudscraper ============
+try:
+    import cloudscraper
+    CLOUDSCRAPER_AVAILABLE = True
+except ImportError:
+    CLOUDSCRAPER_AVAILABLE = False
+    logger.warning("⚠️ cloudscraper نصب نیست! برای عبور از Cloudflare لطفاً نصب کنید: pip install cloudscraper")
+
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ============ تنظیمات ============
@@ -135,6 +143,19 @@ class AnimeSearcher:
 
         self.engine_timeout = 12       # تایم‌اوت هر موتور جستجو
         self.overall_timeout = 25      # حداکثر زمان کل جستجو
+
+        # ============ ایجاد scraper برای عبور از Cloudflare ============
+        if CLOUDSCRAPER_AVAILABLE:
+            self.scraper = cloudscraper.create_scraper(
+                browser={
+                    'browser': 'chrome',
+                    'platform': 'windows',
+                    'mobile': False,
+                },
+                delay=1,
+            )
+        else:
+            self.scraper = None
 
     def _headers(self, fa: bool = False) -> Dict[str, str]:
         headers = {
@@ -415,6 +436,7 @@ class AnimeSearcher:
 
         return results
 
+    # ============ اصلاح شده: استفاده از cloudscraper برای عبور از Cloudflare ============
     def _search_trusted_sites(
         self,
         anime_name: str,
@@ -422,7 +444,7 @@ class AnimeSearcher:
         dubbed: bool = False,
         uncensored: bool = False,
     ) -> List[Dict]:
-        """جستجو مستقیم در سایت‌های معتبر ایرانی"""
+        """جستجو مستقیم در سایت‌های معتبر ایرانی با پشتیبانی از Cloudflare"""
         results: List[Dict] = []
         seen = set()
         headers = self._headers(fa=True)
@@ -430,34 +452,108 @@ class AnimeSearcher:
         for site in self.anime_sites:
             try:
                 search_url = site["search_url"].format(quote_plus(anime_name))
-                resp = requests.get(search_url, headers=headers, timeout=6, verify=False)
+                logger.info(f"🔍 جستجو در {site['name']}: {search_url}")
+
+                # ========== استفاده از cloudscraper ==========
+                if self.scraper:
+                    resp = self.scraper.get(
+                        search_url,
+                        headers=headers,
+                        timeout=15,
+                        verify=True  # ✅ فعال کردن SSL
+                    )
+                else:
+                    # fallback به requests معمولی
+                    resp = requests.get(
+                        search_url,
+                        headers=headers,
+                        timeout=15,
+                        verify=False
+                    )
+
                 if resp.status_code != 200:
+                    logger.warning(f"⚠️ {site['name']} status: {resp.status_code}")
                     continue
 
                 soup = BeautifulSoup(resp.text, "html.parser")
+
+                # حذف المان‌های غیرضروری
+                for tag in soup(["script", "style", "nav", "footer", "header"]):
+                    tag.decompose()
+
                 bad_markers = ("wa.me", "mailto:", "javascript:", "#", "/wp-",
-                               "/category", "/tag", "/author", "/feed", "/page/")
-                for link in soup.find_all("a", href=True)[:60]:
+                               "/category", "/tag", "/author", "/feed", "/page/",
+                               "/cdn-cgi/", "/wp-content", "?lang=", "&lang=",
+                               "/login", "/register", "/cart", "/checkout", "/profile")
+
+                # پیدا کردن لینک‌ها با سلکتورهای مختلف
+                found_links = []
+                selectors = [
+                    "article h2 a",
+                    ".post-title a",
+                    "h2.entry-title a",
+                    "a.post-link",
+                    "h2 a",
+                    ".entry-title a",
+                    "a[rel='bookmark']",
+                ]
+
+                for selector in selectors:
+                    links = soup.select(selector)
+                    if links:
+                        found_links.extend(links)
+                        break
+
+                # اگر هیچ لینکی با سلکتورها پیدا نشد، همه لینک‌ها رو بررسی کن
+                if not found_links:
+                    found_links = soup.find_all("a", href=True)
+
+                logger.info(f"🔗 {site['name']}: {len(found_links)} لینک پیدا شد")
+
+                for link in found_links[:60]:
                     href = link.get("href", "").strip()
                     title = link.get_text(strip=True)
+
                     if not href:
                         continue
+
+                    # تبدیل لینک نسبی به مطلق
                     if href.startswith("/"):
                         href = site["url"] + href
+                    elif href.startswith("?") or href.startswith("#"):
+                        continue
+
                     href_lower = href.lower()
+
+                    # فیلتر لینک‌های بی‌ربط
                     if not href_lower.startswith("http"):
                         continue
+
                     if any(m in href_lower for m in bad_markers):
                         continue
-                    # حذف صفحه‌ی اصلی سایت / تغییر زبان
+
+                    # حذف صفحه‌ی اصلی سایت
                     if href_lower.rstrip("/") == site["url"].lower().rstrip("/"):
                         continue
-                    if "?lang=" in href_lower or href_lower.endswith("?lang"):
+
+                    # بررسی ارتباط با انیمه
+                    title_lower = title.lower()
+                    anime_lower = anime_name.lower()
+
+                    # بررسی ارتباط با انیمه
+                    is_related = (
+                        anime_lower in title_lower or
+                        anime_lower in href_lower or
+                        any(word in title_lower for word in anime_lower.split()) or
+                        "دانلود" in href or "download" in href_lower
+                    )
+
+                    # اگر عنوان خیلی کوتاه بود و ارتباطی نداشت، رد کن
+                    if not is_related and len(title) < 4:
                         continue
-                    # فقط لینک‌های مرتبط با انیمه / صفحه‌های دانلود
-                    if len(title) < 3 and not (
-                        "anime" in href_lower or "download" in href_lower or "دانلود" in href
-                    ):
+
+                    # اگر طول عنوان کمتر از ۳ کاراکتر بود و ارتباطی نداشت، رد کن
+                    if len(title) < 3 and not ("anime" in href_lower or "download" in href_lower or "دانلود" in href):
                         continue
 
                     item = self._make_result(
@@ -469,13 +565,16 @@ class AnimeSearcher:
                         uncensored,
                         site["name"],
                     )
+
                     if item and item["url"] not in seen:
                         seen.add(item["url"])
                         results.append(item)
-                        if len(results) >= 5:
+                        logger.info(f"✅ پیدا شد در {site['name']}: {title[:50]}")
+                        if len(results) >= 8:
                             return results
+
             except Exception as e:
-                logger.warning(f"خطا در جستجوی {site['name']}: {str(e)[:60]}")
+                logger.warning(f"خطا در جستجوی {site['name']}: {str(e)[:100]}")
                 continue
 
         return results
@@ -510,57 +609,62 @@ class AnimeSearcher:
         site_query = f"{anime_name} anime site:animefa.ir OR site:animeonline.ir OR site:animex.ir"
 
         all_results: List[Dict] = []
-        executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="search")
-        futures = []
-        try:
-            futures.append(
-                executor.submit(
-                    self._search_duckduckgo,
-                    [persian_query, english_query],
-                    anime_name, quality, dubbed, uncensored,
-                )
-            )
-            futures.append(
-                executor.submit(
-                    self._search_duckduckgo,
-                    [site_query],
-                    anime_name, quality, dubbed, uncensored,
-                )
-            )
-            futures.append(
-                executor.submit(
-                    self._search_bing, english_query, anime_name, quality, dubbed, uncensored
-                )
-            )
-            futures.append(
-                executor.submit(
-                    self._search_bing, persian_query, anime_name, quality, dubbed, uncensored
-                )
-            )
-            futures.append(
-                executor.submit(
-                    self._search_mojeek, english_query, anime_name, quality, dubbed, uncensored
-                )
-            )
-            futures.append(
-                executor.submit(
-                    self._search_trusted_sites, anime_name, quality, dubbed, uncensored
-                )
-            )
 
-            deadline = time.time() + self.overall_timeout
-            for future in as_completed(futures):
-                remaining = deadline - time.time()
-                if remaining <= 0:
-                    break
-                try:
-                    res = future.result(timeout=max(0.1, remaining))
-                    if res:
-                        all_results.extend(res)
-                except Exception as e:
-                    logger.warning(f"جستجو ناموفق: {str(e)[:80]}")
-        finally:
-            executor.shutdown(wait=False)
+        # ========== اولویت با سایت‌های ایرانی ==========
+        logger.info("🇮🇷 جستجوی مستقیم در سایت‌های ایرانی...")
+        trusted_results = self._search_trusted_sites(anime_name, quality, dubbed, uncensored)
+        all_results.extend(trusted_results)
+        logger.info(f"🇮🇷 {len(trusted_results)} نتیجه از سایت‌های ایرانی")
+
+        # ========== اگر از سایت‌های ایرانی نتیجه کافی نیومد، موتورهای جستجو رو امتحان کن ==========
+        if len(all_results) < 3:
+            logger.info("🌐 جستجو در موتورهای جستجو...")
+            executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="search")
+            futures = []
+            try:
+                futures.append(
+                    executor.submit(
+                        self._search_duckduckgo,
+                        [persian_query, english_query],
+                        anime_name, quality, dubbed, uncensored,
+                    )
+                )
+                futures.append(
+                    executor.submit(
+                        self._search_duckduckgo,
+                        [site_query],
+                        anime_name, quality, dubbed, uncensored,
+                    )
+                )
+                futures.append(
+                    executor.submit(
+                        self._search_bing, english_query, anime_name, quality, dubbed, uncensored
+                    )
+                )
+                futures.append(
+                    executor.submit(
+                        self._search_bing, persian_query, anime_name, quality, dubbed, uncensored
+                    )
+                )
+                futures.append(
+                    executor.submit(
+                        self._search_mojeek, english_query, anime_name, quality, dubbed, uncensored
+                    )
+                )
+
+                deadline = time.time() + self.overall_timeout
+                for future in as_completed(futures):
+                    remaining = deadline - time.time()
+                    if remaining <= 0:
+                        break
+                    try:
+                        res = future.result(timeout=max(0.1, remaining))
+                        if res:
+                            all_results.extend(res)
+                    except Exception as e:
+                        logger.warning(f"جستجو ناموفق: {str(e)[:80]}")
+            finally:
+                executor.shutdown(wait=False)
 
         # حذف URLهای تکراری
         merged: List[Dict] = []
@@ -579,6 +683,7 @@ class AnimeSearcher:
         final = merged[:10]
         if final:
             self._save_to_cache(cache_key, final)
+            logger.info(f"✅ {len(final)} نتیجه نهایی (از این تعداد {len([r for r in final if r['trusted']])} مورد از سایت‌های ایرانی)")
 
         return final
 
