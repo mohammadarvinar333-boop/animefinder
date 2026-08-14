@@ -919,7 +919,7 @@ def run_health_server():
     server.serve_forever()
 
 
-# ============ تابع اصلی اجرای ربات ============
+# ============ تابع اصلی اجرای ربات (اصلاح شده) ============
 async def run_bot():
     bot = AnimeBot()
     application = (
@@ -936,16 +936,39 @@ async def run_bot():
     application.add_handler(CallbackQueryHandler(bot.handle_callback))
 
     logger.info("🤖 ربات انیمه راه‌اندازی شد!")
-    await application.run_polling()
+    
+    # ✅ اصلاح: استفاده از run_polling با مدیریت صحیح
+    await application.initialize()
+    await application.start()
+    await application.updater.start_polling()
+    
+    # نگه داشتن ربات در حالت اجرا
+    try:
+        # منتظر ماندن تا زمانی که ربات متوقف شود
+        while True:
+            await asyncio.sleep(1)
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("🛑 در حال توقف ربات...")
+    finally:
+        await application.updater.stop()
+        await application.stop()
+        await application.shutdown()
 
 
+# ============ تابع اصلی (اصلاح شده) ============
 def main():
     # راه‌اندازی سرور سلامت در ترد جداگانه
     health_thread = threading.Thread(target=run_health_server, daemon=True)
     health_thread.start()
 
-    # اجرای ربات
-    asyncio.run(run_bot())
+    # ✅ اجرای صحیح ربات با مدیریت حلقه رویداد
+    try:
+        asyncio.run(run_bot())
+    except KeyboardInterrupt:
+        logger.info("🛑 ربات متوقف شد.")
+    except Exception as e:
+        logger.error(f"❌ خطا در اجرای ربات: {e}")
+        raise
 
 
 if __name__ == "__main__":
