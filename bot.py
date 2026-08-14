@@ -26,12 +26,39 @@ from telegram.ext import (
 from bs4 import BeautifulSoup
 from urllib.parse import quote_plus, urlparse, parse_qs
 
+# ============ اضافه کردن Selenium ============
+try:
+    from selenium import webdriver
+    from selenium.webdriver.chrome.options import Options
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
+    from selenium.common.exceptions import TimeoutException, WebDriverException
+    from webdriver_manager.chrome import ChromeDriverManager
+    from selenium.webdriver.chrome.service import Service
+    SELENIUM_AVAILABLE = True
+    logger_selenium = logging.getLogger(__name__)
+    logger_selenium.info("✅ Selenium و WebDriver Manager نصب هستند!")
+except ImportError:
+    SELENIUM_AVAILABLE = False
+    logging.basicConfig(
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        level=logging.INFO,
+    )
+    logger = logging.getLogger(__name__)
+    logger.warning("⚠️ Selenium یا webdriver-manager نصب نیست! برای عبور از Cloudflare نصب کنید: pip install selenium webdriver-manager")
+
 # ============ اضافه کردن cloudscraper ============
 try:
     import cloudscraper
     CLOUDSCRAPER_AVAILABLE = True
 except ImportError:
     CLOUDSCRAPER_AVAILABLE = False
+    logging.basicConfig(
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        level=logging.INFO,
+    )
+    logger = logging.getLogger(__name__)
     logger.warning("⚠️ cloudscraper نصب نیست! برای عبور از Cloudflare لطفاً نصب کنید: pip install cloudscraper")
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -436,7 +463,7 @@ class AnimeSearcher:
 
         return results
 
-    # ============ اصلاح شده: استفاده از cloudscraper برای عبور از Cloudflare ============
+    # ============ جستجو در سایت‌های ایرانی با Selenium (برای عبور از Cloudflare) ============
     def _search_trusted_sites(
         self,
         anime_name: str,
@@ -444,38 +471,75 @@ class AnimeSearcher:
         dubbed: bool = False,
         uncensored: bool = False,
     ) -> List[Dict]:
-        """جستجو مستقیم در سایت‌های معتبر ایرانی با پشتیبانی از Cloudflare"""
+        """جستجو مستقیم در سایت‌های معتبر ایرانی با Selenium برای عبور از Cloudflare"""
         results: List[Dict] = []
         seen = set()
-        headers = self._headers(fa=True)
+
+        if not SELENIUM_AVAILABLE:
+            logger.warning("⚠️ Selenium در دسترس نیست! از cloudscraper استفاده می‌شود...")
+            # استفاده از cloudscraper به عنوان fallback
+            return self._search_trusted_sites_fallback(anime_name, quality, dubbed, uncensored)
+
+        # تنظیمات Chrome
+        chrome_options = Options()
+        chrome_options.add_argument("--headless")
+        chrome_options.add_argument("--no-sandbox")
+        chrome_options.add_argument("--disable-dev-shm-usage")
+        chrome_options.add_argument("--disable-gpu")
+        chrome_options.add_argument("--window-size=1920,1080")
+        chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+        chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        chrome_options.add_experimental_option('useAutomationExtension', False)
+        chrome_options.add_argument(f"--user-agent={random.choice(self.user_agents)}")
+
+        driver = None
 
         for site in self.anime_sites:
             try:
                 search_url = site["search_url"].format(quote_plus(anime_name))
-                logger.info(f"🔍 جستجو در {site['name']}: {search_url}")
+                logger.info(f"🔍 جستجو در {site['name']} با Selenium: {search_url}")
 
-                # ========== استفاده از cloudscraper ==========
-                if self.scraper:
-                    resp = self.scraper.get(
-                        search_url,
-                        headers=headers,
-                        timeout=15,
-                        verify=True  # ✅ فعال کردن SSL
-                    )
-                else:
-                    # fallback به requests معمولی
-                    resp = requests.get(
-                        search_url,
-                        headers=headers,
-                        timeout=15,
-                        verify=False
-                    )
-
-                if resp.status_code != 200:
-                    logger.warning(f"⚠️ {site['name']} status: {resp.status_code}")
+                # راه‌اندازی Chrome
+                try:
+                    if os.environ.get("RENDER"):
+                        # تنظیمات مخصوص Render
+                        chrome_options.binary_location = os.environ.get("CHROME_BIN", "/usr/bin/google-chrome")
+                        service = Service(os.environ.get("CHROME_DRIVER", "/usr/bin/chromedriver"))
+                        driver = webdriver.Chrome(service=service, options=chrome_options)
+                    else:
+                        # تنظیمات معمولی (محلی)
+                        service = Service(ChromeDriverManager().install())
+                        driver = webdriver.Chrome(service=service, options=chrome_options)
+                    
+                    # مخفی کردن webdriver
+                    driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+                except Exception as e:
+                    logger.warning(f"⚠️ خطا در راه‌اندازی Chrome برای {site['name']}: {str(e)[:80]}")
                     continue
 
-                soup = BeautifulSoup(resp.text, "html.parser")
+                # بارگذاری صفحه
+                driver.get(search_url)
+                
+                # منتظر بارگذاری کامل
+                try:
+                    WebDriverWait(driver, 20).until(
+                        EC.presence_of_element_located((By.TAG_NAME, "body"))
+                    )
+                    # منتظر بمان تا صفحه کامل بارگذاری شود
+                    time.sleep(3)
+                except TimeoutException:
+                    logger.warning(f"⏰ Timeout در بارگذاری {site['name']}")
+                    driver.quit()
+                    driver = None
+                    continue
+
+                # گرفتن HTML
+                html = driver.page_source
+                soup = BeautifulSoup(html, "html.parser")
+
+                # بستن مرورگر
+                driver.quit()
+                driver = None
 
                 # حذف المان‌های غیرضروری
                 for tag in soup(["script", "style", "nav", "footer", "header"]):
@@ -496,6 +560,11 @@ class AnimeSearcher:
                     "h2 a",
                     ".entry-title a",
                     "a[rel='bookmark']",
+                    ".blog-item a",
+                    "h3 a",
+                    ".item-title a",
+                    "a[href*='download']",
+                    "a[href*='دانلود']",
                 ]
 
                 for selector in selectors:
@@ -540,7 +609,6 @@ class AnimeSearcher:
                     title_lower = title.lower()
                     anime_lower = anime_name.lower()
 
-                    # بررسی ارتباط با انیمه
                     is_related = (
                         anime_lower in title_lower or
                         anime_lower in href_lower or
@@ -548,11 +616,146 @@ class AnimeSearcher:
                         "دانلود" in href or "download" in href_lower
                     )
 
-                    # اگر عنوان خیلی کوتاه بود و ارتباطی نداشت، رد کن
                     if not is_related and len(title) < 4:
                         continue
 
-                    # اگر طول عنوان کمتر از ۳ کاراکتر بود و ارتباطی نداشت، رد کن
+                    if len(title) < 3 and not ("anime" in href_lower or "download" in href_lower or "دانلود" in href):
+                        continue
+
+                    item = self._make_result(
+                        href,
+                        title,
+                        anime_name,
+                        quality,
+                        dubbed,
+                        uncensored,
+                        site["name"],
+                    )
+
+                    if item and item["url"] not in seen:
+                        seen.add(item["url"])
+                        results.append(item)
+                        logger.info(f"✅ پیدا شد در {site['name']}: {title[:50]}")
+                        if len(results) >= 8:
+                            return results
+
+            except Exception as e:
+                logger.warning(f"خطا در جستجوی {site['name']}: {str(e)[:100]}")
+                if driver:
+                    try:
+                        driver.quit()
+                    except:
+                        pass
+                    driver = None
+                continue
+
+        return results
+
+    # ============ Fallback: استفاده از cloudscraper ============
+    def _search_trusted_sites_fallback(
+        self,
+        anime_name: str,
+        quality: str = None,
+        dubbed: bool = False,
+        uncensored: bool = False,
+    ) -> List[Dict]:
+        """جستجو مستقیم در سایت‌های معتبر ایرانی با cloudscraper (fallback)"""
+        results: List[Dict] = []
+        seen = set()
+        headers = self._headers(fa=True)
+
+        for site in self.anime_sites:
+            try:
+                search_url = site["search_url"].format(quote_plus(anime_name))
+                logger.info(f"🔍 جستجو در {site['name']} (fallback): {search_url}")
+
+                if self.scraper:
+                    resp = self.scraper.get(
+                        search_url,
+                        headers=headers,
+                        timeout=15,
+                        verify=False
+                    )
+                else:
+                    resp = requests.get(
+                        search_url,
+                        headers=headers,
+                        timeout=15,
+                        verify=False
+                    )
+
+                if resp.status_code != 200:
+                    logger.warning(f"⚠️ {site['name']} status: {resp.status_code}")
+                    continue
+
+                soup = BeautifulSoup(resp.text, "html.parser")
+
+                for tag in soup(["script", "style", "nav", "footer", "header"]):
+                    tag.decompose()
+
+                bad_markers = ("wa.me", "mailto:", "javascript:", "#", "/wp-",
+                               "/category", "/tag", "/author", "/feed", "/page/",
+                               "/cdn-cgi/", "/wp-content", "?lang=", "&lang=",
+                               "/login", "/register", "/cart", "/checkout", "/profile")
+
+                found_links = []
+                selectors = [
+                    "article h2 a",
+                    ".post-title a",
+                    "h2.entry-title a",
+                    "a.post-link",
+                    "h2 a",
+                    ".entry-title a",
+                    "a[rel='bookmark']",
+                ]
+
+                for selector in selectors:
+                    links = soup.select(selector)
+                    if links:
+                        found_links.extend(links)
+                        break
+
+                if not found_links:
+                    found_links = soup.find_all("a", href=True)
+
+                logger.info(f"🔗 {site['name']}: {len(found_links)} لینک پیدا شد")
+
+                for link in found_links[:60]:
+                    href = link.get("href", "").strip()
+                    title = link.get_text(strip=True)
+
+                    if not href:
+                        continue
+
+                    if href.startswith("/"):
+                        href = site["url"] + href
+                    elif href.startswith("?") or href.startswith("#"):
+                        continue
+
+                    href_lower = href.lower()
+
+                    if not href_lower.startswith("http"):
+                        continue
+
+                    if any(m in href_lower for m in bad_markers):
+                        continue
+
+                    if href_lower.rstrip("/") == site["url"].lower().rstrip("/"):
+                        continue
+
+                    title_lower = title.lower()
+                    anime_lower = anime_name.lower()
+
+                    is_related = (
+                        anime_lower in title_lower or
+                        anime_lower in href_lower or
+                        any(word in title_lower for word in anime_lower.split()) or
+                        "دانلود" in href or "download" in href_lower
+                    )
+
+                    if not is_related and len(title) < 4:
+                        continue
+
                     if len(title) < 3 and not ("anime" in href_lower or "download" in href_lower or "دانلود" in href):
                         continue
 
@@ -727,11 +930,13 @@ class AnimeSearcher:
         return any(keyword in text_lower for keyword in keywords)
 
 
-# ============ کلاس اصلی ربات ============
+# ============ کلاس اصلی ربات با قفل جستجو ============
 class AnimeBot:
     def __init__(self):
         self.searcher = AnimeSearcher()
         self.user_data: Dict[int, Dict] = {}
+        # ========== قفل جستجو برای هر کاربر ==========
+        self.user_search_lock: Dict[int, bool] = {}  # True = در حال جستجو
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [
@@ -774,44 +979,71 @@ class AnimeBot:
             )
             return
 
-        msg = await update.message.reply_text(
-            f"🔍 در حال جستجوی «{query_text}»...\n⏳ لطفاً چند لحظه صبر کنید...",
-            parse_mode="Markdown",
-        )
-
-        corrected_name = self.searcher.correct_spelling(query_text)
-
-        if user_id not in self.user_data:
-            self.user_data[user_id] = {}
-        self.user_data[user_id]["last_search"] = corrected_name
-        self.user_data[user_id].setdefault("filters", {})
-
-        filters_data = self.user_data[user_id]["filters"]
-        quality = filters_data.get("quality")
-        dubbed = filters_data.get("dubbed", False)
-        uncensored = filters_data.get("uncensored", False)
-
-        results = await asyncio.to_thread(
-            self.searcher.search_google,
-            corrected_name,
-            quality=quality,
-            dubbed=dubbed,
-            uncensored=uncensored,
-        )
-
-        if not results:
-            await msg.edit_text(
-                f"❌ متأسفم! انیمه «{query_text}» پیدا نشد.\n\n"
-                f"💡 **راهکارها:**\n"
-                f"• اسم انگلیسی رو امتحان کن\n"
-                f"• از جستجوی پیشرفته استفاده کن\n"
-                f"• از جستجوی ژانر استفاده کن\n\n"
-                f"🔄 پیشنهاد: `{corrected_name}`",
+        # ========== بررسی قفل جستجو برای کاربر ==========
+        if self.user_search_lock.get(user_id, False):
+            logger.warning(f"⛔ کاربر {user_id} در حال جستجو است و دوباره تلاش کرد")
+            await update.message.reply_text(
+                "⏳ **لطفاً صبر کنید!**\n"
+                "شما در حال حاضر یک جستجو در حال انجام دارید.\n"
+                "پس از اتمام جستجوی قبلی، می‌توانید دوباره تلاش کنید.",
                 parse_mode="Markdown",
             )
             return
 
-        await self.show_results(msg, corrected_name, results, user_id)
+        # ========== قفل کردن کاربر ==========
+        self.user_search_lock[user_id] = True
+        logger.info(f"🔒 کاربر {user_id} قفل شد (شروع جستجو)")
+
+        try:
+            msg = await update.message.reply_text(
+                f"🔍 در حال جستجوی «{query_text}»...\n⏳ لطفاً چند لحظه صبر کنید...",
+                parse_mode="Markdown",
+            )
+
+            corrected_name = self.searcher.correct_spelling(query_text)
+
+            if user_id not in self.user_data:
+                self.user_data[user_id] = {}
+            self.user_data[user_id]["last_search"] = corrected_name
+            self.user_data[user_id].setdefault("filters", {})
+
+            filters_data = self.user_data[user_id]["filters"]
+            quality = filters_data.get("quality")
+            dubbed = filters_data.get("dubbed", False)
+            uncensored = filters_data.get("uncensored", False)
+
+            results = await asyncio.to_thread(
+                self.searcher.search_google,
+                corrected_name,
+                quality=quality,
+                dubbed=dubbed,
+                uncensored=uncensored,
+            )
+
+            if not results:
+                await msg.edit_text(
+                    f"❌ متأسفم! انیمه «{query_text}» پیدا نشد.\n\n"
+                    f"💡 **راهکارها:**\n"
+                    f"• اسم انگلیسی رو امتحان کن\n"
+                    f"• از جستجوی پیشرفته استفاده کن\n"
+                    f"• از جستجوی ژانر استفاده کن\n\n"
+                    f"🔄 پیشنهاد: `{corrected_name}`",
+                    parse_mode="Markdown",
+                )
+                return
+
+            await self.show_results(msg, corrected_name, results, user_id)
+
+        except Exception as e:
+            logger.error(f"❌ خطا در جستجو برای کاربر {user_id}: {e}")
+            await update.message.reply_text(
+                "❌ خطایی در جستجو رخ داد. لطفاً دوباره تلاش کنید.",
+                parse_mode="Markdown",
+            )
+        finally:
+            # ========== آزاد کردن قفل کاربر ==========
+            self.user_search_lock[user_id] = False
+            logger.info(f"🔓 کاربر {user_id} آزاد شد (پایان جستجو)")
 
     async def show_results(
         self, msg, anime_name: str, results: List[Dict], user_id: int
@@ -977,24 +1209,53 @@ class AnimeBot:
         )
 
     async def search_by_genre(self, query, genre: str):
-        genre_names = self.searcher.genres.get(genre, [genre])
-        genre_name = genre_names[0] if genre_names else genre
+        user_id = query.from_user.id
 
-        await query.edit_message_text(
-            f"🔍 در حال جستجوی انیمه‌های ژانر «{genre_name}»...\n⏳ لطفاً صبر کنید..."
-        )
-
-        results = await asyncio.to_thread(self.searcher.search_google, genre_name)
-
-        if results:
-            await self.show_results(
-                query.message, f"ژانر {genre_name}", results, query.from_user.id
-            )
-        else:
+        # ========== بررسی قفل جستجو برای کاربر ==========
+        if self.user_search_lock.get(user_id, False):
+            logger.warning(f"⛔ کاربر {user_id} در حال جستجو است و دوباره تلاش کرد (ژانر)")
             await query.edit_message_text(
-                f"❌ متأسفم! انیمه‌ای با ژانر «{genre_name}» پیدا نشد.\n"
-                f"🔄 ژانر دیگری را امتحان کن یا از جستجوی ساده استفاده کن."
+                "⏳ **لطفاً صبر کنید!**\n"
+                "شما در حال حاضر یک جستجو در حال انجام دارید.\n"
+                "پس از اتمام جستجوی قبلی، می‌توانید دوباره تلاش کنید.",
+                parse_mode="Markdown",
             )
+            return
+
+        # ========== قفل کردن کاربر ==========
+        self.user_search_lock[user_id] = True
+        logger.info(f"🔒 کاربر {user_id} قفل شد (جستجوی ژانر)")
+
+        try:
+            genre_names = self.searcher.genres.get(genre, [genre])
+            genre_name = genre_names[0] if genre_names else genre
+
+            await query.edit_message_text(
+                f"🔍 در حال جستجوی انیمه‌های ژانر «{genre_name}»...\n⏳ لطفاً صبر کنید..."
+            )
+
+            results = await asyncio.to_thread(self.searcher.search_google, genre_name)
+
+            if results:
+                await self.show_results(
+                    query.message, f"ژانر {genre_name}", results, query.from_user.id
+                )
+            else:
+                await query.edit_message_text(
+                    f"❌ متأسفم! انیمه‌ای با ژانر «{genre_name}» پیدا نشد.\n"
+                    f"🔄 ژانر دیگری را امتحان کن یا از جستجوی ساده استفاده کن."
+                )
+
+        except Exception as e:
+            logger.error(f"❌ خطا در جستجوی ژانر برای کاربر {user_id}: {e}")
+            await query.edit_message_text(
+                "❌ خطایی در جستجو رخ داد. لطفاً دوباره تلاش کنید.",
+                parse_mode="Markdown",
+            )
+        finally:
+            # ========== آزاد کردن قفل کاربر ==========
+            self.user_search_lock[user_id] = False
+            logger.info(f"🔓 کاربر {user_id} آزاد شد (پایان جستجوی ژانر)")
 
     async def show_filters(self, query):
         user_id = query.from_user.id
