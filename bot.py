@@ -621,10 +621,10 @@ class AnimeBot:
             )
 
         keyboard.append(
-            [InlineKeyboardButton("🔄 جستجوی جدید", callback_data="new_search")],
+            [InlineKeyboardButton("🔄 جستجوی جدید", callback_data="new_search")]
         )
         keyboard.append(
-            [InlineKeyboardButton("🏠 منوی اصلی", callback_data="main_menu")],
+            [InlineKeyboardButton("🏠 منوی اصلی", callback_data="main_menu")]
         )
 
         await msg.edit_text(
@@ -636,10 +636,24 @@ class AnimeBot:
 
     async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
-        await query.answer()
+        user_id = update.effective_user.id
+        
+        # ✅ مدیریت خطای Query is too old
+        try:
+            await query.answer()
+        except Exception as e:
+            logger.warning(f"⚠️ خطا در پاسخ به کوئری: {e}")
+            # اگر کوئری منقضی شده، یک پیام جدید ارسال کن
+            await context.bot.send_message(
+                chat_id=user_id,
+                text="⏰ زمان این دکمه منقضی شده است. لطفاً دوباره از منوی اصلی استفاده کنید.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🏠 منوی اصلی", callback_data="main_menu")]
+                ])
+            )
+            return
 
         data = query.data
-        user_id = update.effective_user.id
 
         if data == "main_menu":
             await self.show_main_menu(query)
@@ -911,7 +925,6 @@ class HealthHandler(BaseHTTPRequestHandler):
             self.send_response(404)
             self.end_headers()
     
-    # ✅ اضافه کردن پشتیبانی از متد HEAD برای رفع خطای 501
     def do_HEAD(self):
         if self.path == "/":
             self.send_response(200)
